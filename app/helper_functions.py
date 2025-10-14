@@ -2,11 +2,9 @@ from ppadb.client import Client as AdbClient
 import time
 import cv2
 import numpy as np
-from dotenv import load_dotenv
 import os
 import glob
 
-load_dotenv()
 
 
 def clear_screenshots_directory():
@@ -274,10 +272,9 @@ def swipe(device, x1, y1, x2, y2, duration=500):
 
 
 def generate_comment(profile_text):
-    """Legacy function - now uses Gemini via gemini_analyzer"""
-    from gemini_analyzer import generate_comment_gemini
-    from config import GEMINI_API_KEY
-    return generate_comment_gemini(profile_text, GEMINI_API_KEY)
+    """Legacy function - now uses OpenAI via analyzer facade"""
+    from analyzer import generate_comment
+    return generate_comment(profile_text)
 
 
 def get_screen_resolution(device):

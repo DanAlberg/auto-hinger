@@ -10,19 +10,18 @@ import time
 import uuid
 from typing import Dict, Any, Optional, TypedDict
 from langgraph.graph import StateGraph, END
-from google import genai
-from google.genai import types
+import base64
+from openai import OpenAI
 
-from config import GEMINI_API_KEY
 from helper_functions import (
     connect_device, get_screen_resolution, open_hinge, reset_hinge_app,
     capture_screenshot, tap, tap_with_confidence, swipe,
     dismiss_keyboard, clear_screenshots_directory, detect_like_button_cv, detect_send_button_cv, detect_comment_field_cv, input_text_robust
 )
-from gemini_analyzer import (
-    extract_text_from_image_gemini, analyze_dating_ui_with_gemini,
-    find_ui_elements_with_gemini, analyze_profile_scroll_content,
-    detect_comment_ui_elements, generate_comment_gemini, generate_contextual_date_comment
+from analyzer import (
+    extract_text_from_image, analyze_dating_ui,
+    find_ui_elements, analyze_profile_scroll_content,
+    detect_comment_ui_elements, generate_comment, generate_contextual_date_comment
 )
 from data_store import store_generated_comment, calculate_template_success_rates
 from prompt_engine import update_template_weights
@@ -72,8 +71,8 @@ class HingeAgentState(TypedDict):
     should_continue: bool
     completion_reason: str
     
-    # Gemini decision context
-    gemini_reasoning: str
+    # AI decision context
+    ai_reasoning: str
     next_tool_suggestion: str
     
     # Batch processing for LangGraph recursion limit management
@@ -91,7 +90,7 @@ class LangGraphHingeAgent:
         
         self.max_profiles = max_profiles
         self.config = config or DEFAULT_CONFIG
-        self.gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+        self.ai_client = OpenAI()
         self.graph = self._build_workflow()
         
         # Profile batch processing to avoid LangGraph recursion limits
@@ -105,7 +104,7 @@ class LangGraphHingeAgent:
         
         # Add all workflow nodes
         workflow.add_node("initialize_session", self.initialize_session_node)
-        workflow.add_node("gemini_decide_action", self.gemini_decide_action_node)
+        workflow.add_node("ai_decide_action", self.ai_decide_action_node)
         workflow.add_node("capture_screenshot", self.capture_screenshot_node)
         workflow.add_node("analyze_profile", self.analyze_profile_node)
         workflow.add_node("scroll_profile", self.scroll_profile_node)
@@ -130,14 +129,14 @@ class LangGraphHingeAgent:
             "initialize_session",
             self._route_initialization,
             {
-                "success": "gemini_decide_action",
+                "success": "ai_decide_action",
                 "failure": "finalize_session"
             }
         )
         
         workflow.add_conditional_edges(
-            "gemini_decide_action", 
-            self._route_gemini_decision,
+            "ai_decide_action", 
+            self._route_ai_decision,
             {
                 "capture_screenshot": "capture_screenshot",
                 "analyze_profile": "analyze_profile",
@@ -169,7 +168,7 @@ class LangGraphHingeAgent:
                 node,
                 self._route_action_result,
                 {
-                    "continue": "gemini_decide_action",
+                    "continue": "ai_decide_action",
                     "finalize": "finalize_session"
                 }
             )
@@ -189,7 +188,7 @@ class LangGraphHingeAgent:
     def _route_initialization(self, state: HingeAgentState) -> str:
         return "success" if state.get("should_continue", False) else "failure"
     
-    def _route_gemini_decision(self, state: HingeAgentState) -> str:
+    def _route_ai_decision(self, state: HingeAgentState) -> str:
         return state.get("next_tool_suggestion", "finalize")
     
     def _route_action_result(self, state: HingeAgentState) -> str:
@@ -257,16 +256,16 @@ class LangGraphHingeAgent:
             "like_button_confidence": 0.0,
             "should_continue": True,
             "completion_reason": "",
-            "gemini_reasoning": "",
+            "ai_reasoning": "",
             "next_tool_suggestion": "capture_screenshot",
             "current_screenshot": None
         }
     
-    def gemini_decide_action_node(self, state: HingeAgentState) -> HingeAgentState:
-        """Ask Gemini to analyze current state and decide next action"""
-        print(f"🤖 Asking Gemini for next action (Profile {state['current_profile_index'] + 1}/{state['max_profiles']})")
+    def ai_decide_action_node(self, state: HingeAgentState) -> HingeAgentState:
+        """Ask AI to analyze current state and decide next action"""
+        print(f"🤖 Asking AI for next action (Profile {state['current_profile_index'] + 1}/{state['max_profiles']})")
         
-        # Prepare context for Gemini
+        # Prepare context for AI
         context = f"""
         Current Hinge Automation State:
         - Profile Index: {state['current_profile_index']}/{state['max_profiles']}
@@ -319,10 +318,7 @@ class LangGraphHingeAgent:
                 with open(state['current_screenshot'], 'rb') as f:
                     image_bytes = f.read()
                 
-                image_part = types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type='image/png'
-                )
+                b64 = base64.b64encode(image_bytes).decode('utf-8')
                 
                 prompt = f"""
                 {context}
@@ -344,8 +340,13 @@ class LangGraphHingeAgent:
                 - Has the session goal been completed?
                 """
                 
-                config = types.GenerateContentConfig(response_mime_type="application/json")
-                contents = [prompt, image_part]
+                messages = [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                    ]
+                }]
             else:
                 # No screenshot available
                 prompt = f"""
@@ -357,40 +358,40 @@ class LangGraphHingeAgent:
                 Respond in JSON format with next_action and reasoning.
                 """
                 
-                config = types.GenerateContentConfig(response_mime_type="application/json")
-                contents = [prompt]
+                messages = [{"role": "user", "content": prompt}]
             
-            response = self.gemini_client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=contents,
-                config=config
+            resp = self.ai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                response_format={"type": "json_object"},
+                messages=messages,
+                temperature=0.0
             )
             
-            decision = json.loads(response.text) if response.text else {}
+            decision = json.loads(resp.choices[0].message.content) if resp.choices[0].message and resp.choices[0].message.content else {}
             next_action = decision.get('next_action', 'capture_screenshot')
             reasoning = decision.get('reasoning', 'Default action')
             
-            print(f"🎯 Gemini chose: {next_action}")
+            print(f"🎯 AI chose: {next_action}")
             print(f"💭 Reasoning: {reasoning}")
             
             return {
                 **state,
                 "next_tool_suggestion": next_action,
-                "gemini_reasoning": reasoning,
-                "last_action": "gemini_decide_action",
+                "ai_reasoning": reasoning,
+                "last_action": "ai_decide_action",
                 "action_successful": True
             }
             
         except Exception as e:
-            print(f"❌ Gemini decision error: {e}")
+            print(f"❌ AI decision error: {e}")
             # Fallback decision
             fallback_action = "capture_screenshot" if not state['current_screenshot'] else "navigate_to_next"
             
             return {
                 **state,
                 "next_tool_suggestion": fallback_action,
-                "gemini_reasoning": f"Fallback due to error: {e}",
-                "last_action": "gemini_decide_action",
+                "ai_reasoning": f"Fallback due to error: {e}",
+                "last_action": "ai_decide_action",
                 "action_successful": False,
                 "errors_encountered": state["errors_encountered"] + 1
             }
@@ -482,15 +483,8 @@ class LangGraphHingeAgent:
     def _extract_user_content_only(self, screenshot_path: str) -> str:
         """Extract only user-generated content, filtering out UI elements"""
         try:
-            client = genai.Client(api_key=GEMINI_API_KEY)
-            
             with open(screenshot_path, 'rb') as f:
-                image_bytes = f.read()
-            
-            image_part = types.Part.from_bytes(
-                data=image_bytes,
-                mime_type='image/png'
-            )
+                b64 = base64.b64encode(f.read()).decode('utf-8')
             
             prompt = """
             Extract ONLY user-generated content from this dating profile screenshot. 
@@ -519,12 +513,19 @@ class LangGraphHingeAgent:
             If no user content is visible, return an empty string.
             """
             
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=[prompt, image_part]
+            resp = self.ai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                    ]
+                }],
+                temperature=0.0
             )
             
-            return response.text.strip() if response.text else ""
+            return (resp.choices[0].message.content or "").strip()
             
         except Exception as e:
             print(f"❌ Error extracting user content: {e}")
@@ -551,16 +552,9 @@ class LangGraphHingeAgent:
     def _analyze_complete_profile(self, screenshots: list, combined_text: str) -> dict:
         """Perform comprehensive analysis on the complete profile content"""
         try:
-            client = genai.Client(api_key=GEMINI_API_KEY)
-            
             # Use the most recent screenshot for visual analysis
             with open(screenshots[-1], 'rb') as f:
-                image_bytes = f.read()
-            
-            image_part = types.Part.from_bytes(
-                data=image_bytes,
-                mime_type='image/png'
-            )
+                b64 = base64.b64encode(f.read()).decode('utf-8')
             
             prompt = f"""
             Analyze this complete dating profile based on the comprehensive content below.
@@ -603,17 +597,23 @@ class LangGraphHingeAgent:
             Be thorough since this represents their complete profile content.
             """
             
-            config = types.GenerateContentConfig(
-                response_mime_type="application/json"
+            resp = self.ai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                response_format={"type": "json_object"},
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                    ]
+                }],
+                temperature=0.0
             )
             
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=[prompt, image_part],
-                config=config
-            )
-            
-            return json.loads(response.text) if response.text else {}
+            try:
+                return json.loads(resp.choices[0].message.content or "{}")
+            except Exception:
+                return {}
             
         except Exception as e:
             print(f"❌ Error in comprehensive analysis: {e}")
@@ -629,7 +629,7 @@ class LangGraphHingeAgent:
         print("📜 Scrolling profile...")
         
         scroll_analysis = analyze_profile_scroll_content(
-            state['current_screenshot'], GEMINI_API_KEY
+            state['current_screenshot']
         )
         
         if not scroll_analysis.get('should_scroll_down'):
@@ -649,7 +649,7 @@ class LangGraphHingeAgent:
         
         # Capture new content
         new_screenshot = capture_screenshot(state["device"], f"scrolled_{time.time()}")
-        additional_text = extract_text_from_image_gemini(new_screenshot, GEMINI_API_KEY)
+        additional_text = extract_text_from_image(new_screenshot)
         
         # Update profile text if new content found
         updated_text = state["profile_text"]
@@ -793,7 +793,7 @@ class LangGraphHingeAgent:
         
         # Check if comment interface appeared
         immediate_screenshot = capture_screenshot(state["device"], "post_like_immediate")
-        comment_ui = detect_comment_ui_elements(immediate_screenshot, GEMINI_API_KEY)
+        comment_ui = detect_comment_ui_elements(immediate_screenshot)
         comment_interface_appeared = comment_ui.get('comment_field_found', False)
         
         if comment_interface_appeared:
@@ -855,12 +855,11 @@ class LangGraphHingeAgent:
             print("🎯 Using contextual comment generation with profile analysis...")
             comment = generate_contextual_date_comment(
                 profile_analysis, 
-                state['profile_text'], 
-                GEMINI_API_KEY
+                state['profile_text']
             )
         else:
             print("💬 Using standard flirty comment generation...")
-            comment = generate_comment_gemini(state['profile_text'], GEMINI_API_KEY)
+            comment = generate_comment(state['profile_text'])
         
         if not comment:
             comment = self.config.default_comment
@@ -902,7 +901,7 @@ class LangGraphHingeAgent:
             # Fresh screenshot to see current interface
             fresh_screenshot = capture_screenshot(state["device"], "comment_interface_typing")
             
-            comment_ui = detect_comment_ui_elements(fresh_screenshot, GEMINI_API_KEY)
+            comment_ui = detect_comment_ui_elements(fresh_screenshot)
             
             if not comment_ui.get('comment_field_found'):
                 print("❌ Comment field not found")
@@ -1011,7 +1010,7 @@ class LangGraphHingeAgent:
             if not cv_result.get('found'):
                 print("❌ Comment field not found with CV detection")
                 # Fallback to Gemini detection
-                comment_ui = detect_comment_ui_elements(fresh_screenshot, GEMINI_API_KEY)
+                comment_ui = detect_comment_ui_elements(fresh_screenshot)
                 
                 if not comment_ui.get('comment_field_found'):
                     print("❌ Comment field not found with Gemini fallback either")
@@ -1111,7 +1110,7 @@ class LangGraphHingeAgent:
                 }
             else:
                 # Check if comment interface is gone (comment sent but stayed on profile)
-                still_in_comment = detect_comment_ui_elements(verification_screenshot, GEMINI_API_KEY)
+                still_in_comment = detect_comment_ui_elements(verification_screenshot)
                 
                 if not still_in_comment.get('comment_field_found'):
                     print("✅ Consolidated comment process successful (interface closed) - stayed on profile")
@@ -1149,7 +1148,7 @@ class LangGraphHingeAgent:
             fresh_screenshot = capture_screenshot(state["device"], "fallback_like_before_close")
             
             # Check if comment interface is still open
-            comment_ui = detect_comment_ui_elements(fresh_screenshot, GEMINI_API_KEY)
+            comment_ui = detect_comment_ui_elements(fresh_screenshot)
             
             if comment_ui.get('comment_field_found'):
                 print("📱 Closing comment interface...")
@@ -1159,7 +1158,7 @@ class LangGraphHingeAgent:
                 
                 # Verify interface closed
                 post_close_screenshot = capture_screenshot(state["device"], "fallback_after_close")
-                comment_ui_check = detect_comment_ui_elements(post_close_screenshot, GEMINI_API_KEY)
+                comment_ui_check = detect_comment_ui_elements(post_close_screenshot)
                 
                 if comment_ui_check.get('comment_field_found'):
                     print("⚠️ Comment interface still open, trying tap outside...")
@@ -1394,7 +1393,7 @@ class LangGraphHingeAgent:
             
             # Check if we're unstuck
             recovery_screenshot = capture_screenshot(state["device"], f"recovery_attempt_{i}")
-            current_text = extract_text_from_image_gemini(recovery_screenshot, GEMINI_API_KEY)
+            current_text = extract_text_from_image(recovery_screenshot)
             
             if current_text != state.get('profile_text', ''):
                 print(f"✅ Recovery successful on attempt {i + 1}")
@@ -1483,12 +1482,12 @@ class LangGraphHingeAgent:
             }
         
         # Extract current profile info
-        current_text = extract_text_from_image_gemini(
-            state['current_screenshot'], GEMINI_API_KEY
+        current_text = extract_text_from_image(
+            state['current_screenshot']
         )
         
-        current_analysis = analyze_dating_ui_with_gemini(
-            state['current_screenshot'], GEMINI_API_KEY
+        current_analysis = analyze_dating_ui(
+            state['current_screenshot']
         )
         
         # Get previous profile info
@@ -1621,7 +1620,7 @@ class LangGraphHingeAgent:
                 like_button_confidence=0.0,
                 should_continue=True,
                 completion_reason="",
-                gemini_reasoning="",
+                ai_reasoning="",
                 next_tool_suggestion="",
                 batch_start_index=batch_start
             )

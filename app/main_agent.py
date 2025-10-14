@@ -1,8 +1,8 @@
 # app/main_agent.py
 
 """
-Main entry point for the Gemini-controlled Hinge automation agent.
-This uses Gemini AI to intelligently select and execute tools for dating app automation.
+Main entry point for the OpenAI-controlled Hinge automation agent.
+This uses OpenAI to intelligently select and execute tools for dating app automation.
 """
 
 import asyncio
@@ -76,7 +76,7 @@ def get_config(config_name: str, args) -> AgentConfig:
 def print_session_summary(result: Dict[str, Any]):
     """Print a summary of the automation session"""
     print("\n" + "="*60)
-    print("🤖 LANGGRAPH + GEMINI HINGE AUTOMATION SUMMARY")
+    print("🤖 LANGGRAPH + OPENAI HINGE AUTOMATION SUMMARY")
     print("="*60)
     print(f"📊 Profiles Processed: {result.get('profiles_processed', 0)}")
     print(f"💖 Likes Sent: {result.get('likes_sent', 0)}")
@@ -97,7 +97,7 @@ def print_session_summary(result: Dict[str, Any]):
 
 
 async def main():
-    """Main entry point for the Gemini-controlled agent"""
+    """Main entry point for the OpenAI-controlled agent"""
     print("🤖 Starting LangGraph-Powered Hinge Automation Agent")
     print("="*55)
     
@@ -113,7 +113,7 @@ async def main():
         print(f"🎯 Max Profiles: {config.max_profiles}")
         print(f"🔊 Verbose Logging: {config.verbose_logging}")
         print(f"📸 Save Screenshots: {config.save_screenshots}")
-        print(f"🤖 AI Controller: Google Gemini + LangGraph")
+        print(f"🤖 AI Controller: OpenAI + LangGraph")
         print()
         
         # Create and run LangGraph-powered agent
@@ -124,7 +124,7 @@ async def main():
         
         # Run automation
         print("🎬 Starting LangGraph-powered automation workflow...")
-        print("🧠 LangGraph + Gemini will manage state and intelligently route actions...")
+        print("🧠 LangGraph + OpenAI will manage state and intelligently route actions...")
         result = agent.run_automation()
         
         # Print summary
