@@ -1,0 +1,399 @@
+# app/analyzer_openai.py
+# OpenAI-backed implementations that mirror the Gemini analyzer function signatures
+# so existing call sites can be migrated incrementally.
+
+import os
+import json
+import base64
+from typing import Optional, Dict, Any, List
+from openai import OpenAI
+import config  # ensure .env is loaded at import time
+
+
+# Initialize OpenAI client (reads OPENAI_API_KEY from environment)
+_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def _b64_image(image_path: str) -> str:
+    with open(image_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+
+def _chat_text(prompt: str, temperature: float = 0.2, model: str = "gpt-4o-mini") -> str:
+    resp = _client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+    )
+    content = resp.choices[0].message.content or ""
+    return content.strip()
+
+
+def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float = 0.0, model: str = "gpt-4o-mini") -> Dict[str, Any]:
+    messages: List[Dict[str, Any]] = []
+    if image_path:
+        b64 = _b64_image(image_path)
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+            ]
+        })
+    else:
+        messages.append({"role": "user", "content": prompt})
+
+    resp = _client.chat.completions.create(
+        model=model,
+        response_format={"type": "json_object"},
+        messages=messages,
+        temperature=temperature,
+    )
+
+    raw = resp.choices[0].message.content or "{}"
+    try:
+        return json.loads(raw)
+    except Exception:
+        # Attempt minimal repair if the model returns non-JSON by mistake
+        try:
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                return json.loads(raw[start:end + 1])
+        except Exception:
+            pass
+        return {}
+
+
+def extract_text_from_image(image_path: str) -> str:
+    """
+    Extract visible text (bio, name/age, prompts/answers, interests, location) from a dating profile screenshot.
+    """
+    prompt = """
+    Extract all visible text from this dating profile screenshot.
+
+    Focus on:
+    - Profile bio/description text
+    - Name and age information
+    - Any prompts and answers
+    - Interests or hobbies mentioned
+    - Location information if visible
+
+    Return only the extracted text content, formatted cleanly without any analysis or commentary.
+    """
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_b64_image(image_path)}"}}
+        ]
+    }]
+    resp = _client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        temperature=0.2
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
+def _generate_fallback_flirty_comment(profile_text: str) -> str:
+    import random
+    profile_lower = (profile_text or "").lower()
+
+    if any(word in profile_lower for word in ['coffee', 'caffeine', 'espresso', 'latte']):
+        return "I have a theory that our first coffee date is going to turn into an all-day adventure"
+    if any(word in profile_lower for word in ['travel', 'adventure', 'explore', 'wanderlust']):
+        return "Your wanderlust is showing - want to explore the city together?"
+    if any(word in profile_lower for word in ['food', 'foodie', 'cooking', 'restaurant', 'pizza']):
+        return "I'm getting serious 'let's debate the best restaurants over dinner' energy from you"
+    if any(word in profile_lower for word in ['music', 'concert', 'festival', 'band']):
+        return "Plot twist: what if our music taste is as compatible as I think? Testing required"
+    if any(word in profile_lower for word in ['workout', 'gym', 'fitness', 'yoga', 'hike']):
+        return "Challenge accepted - but first, let's grab drinks and see if you're as competitive as me"
+
+    flirty_fallbacks = [
+        "I'm getting major 'let's grab drinks and see if you're as interesting in person' vibes",
+        "Your profile just convinced me we need to test our compatibility over coffee",
+        "I have a theory that we'd have amazing chemistry - care to help me test it?",
+        "Warning: I'm about to suggest we skip the small talk and go straight to an adventure",
+        "Plot twist: what if we actually met up instead of just matching? Wild concept, I know",
+        "I'm calling it - we're going to have one of those 'can't believe we met on an app' stories",
+        "Fair warning: I'm really good at first dates. Want to find out?",
+        "I have a feeling you're trouble in the best way possible. Prove me right?",
+        "Your vibe is immaculate - when can we test the in-person chemistry?",
+        "I'm convinced we're going to have one of those conversations that goes until 3am",
+        "Something tells me you'd be dangerous to take on a date - I'm intrigued"
+    ]
+    return random.choice(flirty_fallbacks)
+
+
+def generate_comment(profile_text: str) -> str:
+    """
+    Generate a flirty, witty dating app comment designed to get a date.
+    """
+    prompt = f"""
+    Based on this dating profile, generate a FLIRTY, WITTY comment that's designed to get a date.
+
+    Profile Content:
+    {profile_text}
+
+    STYLE REQUIREMENTS:
+    - Be confident and playfully flirty (not aggressive or creepy)
+    - Use clever wordplay, puns, or witty observations
+    - Reference something specific from their profile to show you actually read it
+    - Create intrigue and make them want to respond
+    - Suggest meeting up in a clever/indirect way
+    - Sound like you're genuinely interested in them as a person
+    - Keep it under 40 words for maximum impact
+
+    AVOID:
+    - Generic compliments about looks
+    - Boring "hey how are you" openers
+    - Overly sexual or inappropriate content
+    - Trying too hard to be funny
+    - Being too serious or formal
+
+    Generate ONE flirty, witty comment that will get them excited to meet up:
+    """
+    text = _chat_text(prompt, temperature=0.7)
+    text = text.strip().strip("\"'")
+    if not text or len(text) < 10 or text.lower().startswith("hey"):
+        return _generate_fallback_flirty_comment(profile_text)
+    return text
+
+
+def generate_contextual_date_comment(profile_analysis: dict, profile_text: str) -> str:
+    """
+    Generate contextual flirty comments using analysis features like interests, personality, profession, location.
+    """
+    interests = profile_analysis.get('interests', [])
+    personality_traits = profile_analysis.get('personality_traits', [])
+    profession = profile_analysis.get('profession', '')
+    location = profile_analysis.get('location', '')
+
+    context_info = f"""
+    PROFILE ANALYSIS:
+    - Interests: {', '.join(interests[:5])}
+    - Personality: {', '.join(personality_traits[:3])}
+    - Profession: {profession}
+    - Location: {location}
+
+    FULL PROFILE TEXT:
+    {profile_text[:500]}...
+    """
+
+    prompt = f"""
+    Create an IRRESISTIBLE, flirty comment that will make them want to meet up ASAP.
+
+    {context_info}
+
+    ADVANCED REQUIREMENTS:
+    - Use their specific interests/job/personality to create a unique opener
+    - Be confident and slightly cocky (but charming)
+    - Create instant chemistry and intrigue
+    - Suggest a specific type of date that matches their interests
+    - Use humor, wit, or clever observations
+    - Maximum 35 words
+
+    Generate ONE comment that's impossible to ignore:
+    """
+    text = _chat_text(prompt, temperature=0.7)
+    text = text.strip().strip("\"'")
+    if not text or len(text) < 15:
+        return generate_comment(profile_text)
+    return text
+
+
+def analyze_dating_ui(image_path: str) -> dict:
+    """
+    Analyze a dating app screenshot and return structured UI analysis JSON.
+    """
+    prompt = """
+    Analyze this dating app screenshot and provide a comprehensive UI analysis in JSON format:
+
+    {
+        "has_like_button": true/false,
+        "like_button_visible": true/false,
+        "profile_quality_score": 1-10,
+        "should_like": true/false,
+        "reason": "detailed reason for recommendation",
+        "ui_elements_detected": ["list", "of", "visible", "elements"],
+        "profile_attractiveness": 1-10,
+        "text_content_quality": 1-10,
+        "conversation_potential": 1-10,
+        "red_flags": ["any", "concerning", "elements"],
+        "positive_indicators": ["good", "signs", "to", "like"]
+    }
+
+    Respond only with valid JSON.
+    """
+    return _chat_json(prompt, image_path=image_path, temperature=0.0)
+
+
+def find_ui_elements(image_path: str, element_type: str = "like_button") -> dict:
+    """
+    Find UI element approximate normalized coordinates and confidence.
+    """
+    prompt = f"""
+    Analyze this dating app screenshot and find the {element_type}.
+
+    Provide precise location in JSON format:
+    {{
+        "element_found": true/false,
+        "approximate_x_percent": 0.0-1.0,
+        "approximate_y_percent": 0.0-1.0,
+        "confidence": 0.0-1.0,
+        "description": "detailed description of what you see",
+        "visual_context": "describe surrounding elements",
+        "tap_area_size": "small/medium/large"
+    }}
+
+    Express coordinates as 0.0..1.0. Respond only with valid JSON.
+    """
+    return _chat_json(prompt, image_path=image_path, temperature=0.0)
+
+
+def analyze_profile_scroll_content(image_path: str) -> dict:
+    """
+    Determine if more content exists below and where to scroll (normalized coordinates).
+    """
+    prompt = """
+    Analyze this dating profile screenshot to determine scrolling needs:
+
+    {
+        "has_more_content": true/false,
+        "scroll_direction": "up/down/none",
+        "content_completion": 0.0-1.0,
+        "visible_profile_elements": ["photos", "bio", "prompts", "interests"],
+        "should_scroll_down": true/false,
+        "scroll_area_center_x": 0.0-1.0,
+        "scroll_area_center_y": 0.0-1.0,
+        "analysis": "description",
+        "scroll_confidence": 0.0-1.0,
+        "estimated_content_below": "description"
+    }
+
+    Respond only with valid JSON.
+    """
+    return _chat_json(prompt, image_path=image_path, temperature=0.0)
+
+
+def get_profile_navigation_strategy(image_path: str) -> dict:
+    """
+    Recommend navigation action and swipe vectors based on screenshot classification.
+    """
+    prompt = """
+    Analyze this dating app screen to determine navigation strategy:
+
+    {
+        "screen_type": "profile/card_stack/other",
+        "stuck_indicator": true/false,
+        "navigation_action": "swipe_left/swipe_right/scroll_down/tap_next/go_back",
+        "swipe_direction": "left/right/up/down",
+        "swipe_start_x": 0.0-1.0,
+        "swipe_start_y": 0.0-1.0,
+        "swipe_end_x": 0.0-1.0,
+        "swipe_end_y": 0.0-1.0,
+        "confidence": 0.0-1.0,
+        "reason": "why this navigation is recommended"
+    }
+
+    Respond only with valid JSON.
+    """
+    return _chat_json(prompt, image_path=image_path, temperature=0.0)
+
+
+def detect_comment_ui_elements(image_path: str) -> dict:
+    """
+    Detect comment text field and send button approximate positions.
+    """
+    prompt = """
+    Analyze this dating app comment interface screenshot and find UI elements:
+
+    {
+        "comment_field_found": true/false,
+        "comment_field_x": 0.0-1.0,
+        "comment_field_y": 0.0-1.0,
+        "comment_field_confidence": 0.0-1.0,
+        "send_button_found": true/false,
+        "send_button_x": 0.0-1.0,
+        "send_button_y": 0.0-1.0,
+        "send_button_confidence": 0.0-1.0,
+        "cancel_button_found": true/false,
+        "cancel_button_x": 0.0-1.0,
+        "cancel_button_y": 0.0-1.0,
+        "interface_state": "comment_ready/sending/error/unknown",
+        "description": "what you see"
+    }
+
+    Respond only with valid JSON.
+    """
+    return _chat_json(prompt, image_path=image_path, temperature=0.0)
+
+
+def verify_action_success(image_path: str, action_type: str) -> dict:
+    """
+    Verify outcomes like like_tap, comment_sent, profile_change using semantic analysis.
+    """
+    if action_type == "like_tap":
+        prompt = """
+        Analyze this dating app screenshot to verify if a LIKE action was successful:
+
+        {
+            "like_successful": true/false,
+            "interface_state": "comment_modal/main_profile/next_profile/error",
+            "visible_indicators": ["like_confirmation", "comment_interface", "match_notification"],
+            "next_action_available": true/false,
+            "confidence": 0.0-1.0,
+            "description": "what indicates success or failure"
+        }
+
+        Respond only with valid JSON.
+        """
+    elif action_type == "comment_sent":
+        prompt = """
+        Analyze this screenshot to verify if a COMMENT was successfully sent:
+
+        {
+            "comment_sent": true/false,
+            "interface_state": "back_to_profile/match_screen/conversation_started/error",
+            "visible_indicators": ["match_notification", "conversation_preview", "success_message"],
+            "comment_interface_gone": true/false,
+            "confidence": 0.0-1.0,
+            "description": "what indicates success"
+        }
+
+        Respond only with valid JSON.
+        """
+    elif action_type == "profile_change":
+        prompt = """
+        Analyze this screenshot to verify if we successfully moved to a NEW profile:
+
+        {
+            "profile_changed": true/false,
+            "interface_state": "new_profile/same_profile/loading/error",
+            "profile_elements_visible": ["new_photos", "new_name", "new_bio"],
+            "stuck_indicator": true/false,
+            "confidence": 0.0-1.0,
+            "description": "evidence of profile change or not"
+        }
+
+        Respond only with valid JSON.
+        """
+    else:
+        prompt = f"""
+        Analyze this screenshot for general action verification of type: {action_type}
+
+        {{
+            "action_successful": true/false,
+            "interface_state": "unknown",
+            "confidence": 0.0-1.0,
+            "description": "general analysis"
+        }}
+
+        Respond only with valid JSON.
+        """
+
+    result = _chat_json(prompt, image_path=image_path, temperature=0.0)
+    result["verification_type"] = action_type
+    return result
