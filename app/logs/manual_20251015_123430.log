@@ -1,0 +1,50 @@
+Session started 2025-10-15T12:34:30.885430 manual_confirm=True max_profiles=1
+[2025-10-15 12:34:30.888] Manual confirmation mode enabled; every step requires approval and is logged.
+[2025-10-15 12:34:30.897] BEGIN initialize_session_node idx=0 likes=0 comments=0 errors=0
+[2025-10-15 12:34:35.726] CONFIRM initialize_session_node -> YES
+[2025-10-15 12:34:47.902] END initialize_session_node action_successful=True likes=0 comments=0 errors=0
+[2025-10-15 12:34:47.904] BEGIN ai_decide_action_node idx=0 likes=0 comments=0 errors=0
+[2025-10-15 12:34:53.275] CONFIRM ai_decide_action_node -> YES
+[2025-10-15 12:34:56.237] END ai_decide_action_node action_successful=True likes=0 comments=0 errors=0
+[2025-10-15 12:34:56.239] BEGIN capture_screenshot_node idx=0 likes=0 comments=0 errors=0
+[2025-10-15 12:35:38.482] CONFIRM capture_screenshot_node -> YES
+[2025-10-15 12:35:39.774] END capture_screenshot_node action_successful=True likes=0 comments=0 errors=0
+[2025-10-15 12:35:39.776] BEGIN ai_decide_action_node idx=0 likes=0 comments=0 errors=0
+[2025-10-15 12:35:43.229] CONFIRM ai_decide_action_node -> YES
+[2025-10-15 12:35:48.229] END ai_decide_action_node action_successful=True likes=0 comments=0 errors=0
+[2025-10-15 12:35:48.231] BEGIN analyze_profile_node idx=0 likes=0 comments=0 errors=0
+[2025-10-15 12:36:00.464] CONFIRM analyze_profile_node -> YES
+[2025-10-15 12:36:40.038] END analyze_profile_node action_successful=True likes=0 comments=0 errors=0
+[2025-10-15 12:36:40.039] BEGIN ai_decide_action_node idx=0 likes=0 comments=0 errors=0
+[2025-10-15 12:36:43.243] CONFIRM ai_decide_action_node -> YES
+[2025-10-15 12:36:48.116] END ai_decide_action_node action_successful=True likes=0 comments=0 errors=0
+[2025-10-15 12:36:48.119] BEGIN make_like_decision_node idx=0 likes=0 comments=0 errors=0
+[2025-10-15 12:36:53.164] CONFIRM make_like_decision_node -> YES
+[2025-10-15 12:36:53.166] END make_like_decision_node action_successful=True likes=0 comments=0 errors=0
+[2025-10-15 12:36:53.168] BEGIN ai_decide_action_node idx=0 likes=0 comments=0 errors=0
+[2025-10-15 12:36:59.995] CONFIRM ai_decide_action_node -> YES
+[2025-10-15 12:37:06.591] END ai_decide_action_node action_successful=True likes=0 comments=0 errors=0
+[2025-10-15 12:37:06.594] BEGIN detect_like_button_node idx=0 likes=0 comments=0 errors=0
+[2025-10-15 12:37:17.284] CONFIRM detect_like_button_node -> YES
+[2025-10-15 12:37:18.848] END detect_like_button_node action_successful=True likes=0 comments=0 errors=0
+[2025-10-15 12:37:18.850] BEGIN ai_decide_action_node idx=0 likes=0 comments=0 errors=0
+[2025-10-15 12:37:21.557] CONFIRM ai_decide_action_node -> YES
+[2025-10-15 12:37:28.105] END ai_decide_action_node action_successful=True likes=0 comments=0 errors=0
+[2025-10-15 12:37:28.107] BEGIN execute_like_node idx=0 likes=0 comments=0 errors=0
+[2025-10-15 12:37:47.459] CONFIRM execute_like_node -> YES
+[2025-10-15 12:38:00.271] END execute_like_node action_successful=True likes=1 comments=0 errors=0
+[2025-10-15 12:38:00.273] BEGIN ai_decide_action_node idx=0 likes=1 comments=0 errors=0
+[2025-10-15 12:38:08.919] CONFIRM ai_decide_action_node -> YES
+[2025-10-15 12:38:15.297] END ai_decide_action_node action_successful=True likes=1 comments=0 errors=0
+[2025-10-15 12:38:15.299] BEGIN send_comment_with_typing_node idx=0 likes=1 comments=0 errors=0
+[2025-10-15 12:38:27.100] CONFIRM send_comment_with_typing_node -> YES
+[2025-10-15 12:38:27.102] END send_comment_with_typing_node action_successful=False likes=1 comments=0 errors=0
+[2025-10-15 12:38:27.103] BEGIN ai_decide_action_node idx=0 likes=1 comments=0 errors=0
+[2025-10-15 12:38:34.663] CONFIRM ai_decide_action_node -> YES
+[2025-10-15 12:38:40.922] END ai_decide_action_node action_successful=True likes=1 comments=0 errors=0
+[2025-10-15 12:38:40.924] BEGIN send_like_without_comment_node idx=0 likes=1 comments=0 errors=0
+[2025-10-15 12:38:55.073] CONFIRM send_like_without_comment_node -> YES
+[2025-10-15 12:39:37.445] END send_like_without_comment_node action_successful=True likes=2 comments=0 errors=0
+[2025-10-15 12:39:37.447] BEGIN finalize_session_node idx=1 likes=2 comments=0 errors=0
+[2025-10-15 12:41:40.683] CONFIRM finalize_session_node -> NO
+[2025-10-15 12:41:40.684] ABORTED finalize_session_node

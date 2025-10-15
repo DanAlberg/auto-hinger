@@ -49,6 +49,18 @@ def parse_arguments():
         action="store_true",
         help="Disable screenshot saving"
     )
+    parser.add_argument(
+        "--manual-confirm", "--confirm-steps",
+        dest="manual_confirm",
+        action="store_true",
+        help="Require manual confirmation before each step and log all actions"
+    )
+    parser.add_argument(
+        "--trace-ai",
+        dest="trace_ai",
+        action="store_true",
+        help="Trace AI inputs (prompts + image paths) to logs/ai_trace_*.log"
+    )
     
     return parser.parse_args()
 
@@ -69,6 +81,9 @@ def get_config(config_name: str, args) -> AgentConfig:
     config.device_ip = args.device_ip
     config.verbose_logging = args.verbose
     config.save_screenshots = not args.no_screenshots
+    config.manual_confirm = args.manual_confirm
+    # Enable AI trace if explicitly requested or when manual confirm mode is on
+    config.ai_trace = args.trace_ai or args.manual_confirm
     
     return config
 
@@ -113,6 +128,10 @@ async def main():
         print(f"🎯 Max Profiles: {config.max_profiles}")
         print(f"🔊 Verbose Logging: {config.verbose_logging}")
         print(f"📸 Save Screenshots: {config.save_screenshots}")
+        print(f"🛑 Manual Confirm Mode: {config.manual_confirm}")
+        if config.manual_confirm:
+            print("Manual confirmation mode ENABLED: each step requires 'y' to proceed and all actions are logged.")
+        print(f"📝 AI Trace: {config.ai_trace}")
         print(f"🤖 AI Controller: OpenAI + LangGraph")
         print()
         

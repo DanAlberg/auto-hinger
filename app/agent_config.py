@@ -1,7 +1,7 @@
 # app/agent_config.py
 
 from dataclasses import dataclass
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import random
 
 @dataclass 
@@ -62,6 +62,14 @@ class AgentConfig:
     save_screenshots: bool = True
     screenshot_dir: str = "images"
     verbose_logging: bool = True
+
+    # Manual confirmation mode
+    manual_confirm: bool = False
+    manual_log_dir: str = "logs"
+
+    # AI tracing
+    ai_trace: bool = False
+    ai_trace_log_dir: str = "logs"
     
     # Device settings
     device_ip: str = "127.0.0.1"

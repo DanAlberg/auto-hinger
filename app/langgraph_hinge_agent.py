@@ -12,6 +12,9 @@ from typing import Dict, Any, Optional, TypedDict
 from langgraph.graph import StateGraph, END
 import base64
 from openai import OpenAI
+import os
+from datetime import datetime
+from functools import wraps
 
 from helper_functions import (
     connect_device, get_screen_resolution, open_hinge, reset_hinge_app,
@@ -79,6 +82,52 @@ class HingeAgentState(TypedDict):
     batch_start_index: int
 
 
+def gated_step(func):
+    @wraps(func)
+    def wrapper(self, state: HingeAgentState):
+        step_name = func.__name__
+        if getattr(self.config, "manual_confirm", False):
+            # Ensure logging initialized
+            if getattr(self, "manual_log_path", None) is None:
+                try:
+                    self._init_manual_logging()
+                except Exception:
+                    pass
+            # Log BEGIN with brief context
+            self._log(
+                f"BEGIN {step_name} "
+                f"idx={state.get('current_profile_index', 'n/a')} "
+                f"likes={state.get('likes_sent', 0)} "
+                f"comments={state.get('comments_sent', 0)} "
+                f"errors={state.get('errors_encountered', 0)}"
+            )
+            # Ask for confirmation
+            confirmed = self._confirm_step(step_name, state)
+            if not confirmed:
+                aborted = {
+                    **state,
+                    "should_continue": False,
+                    "completion_reason": f"User aborted at {step_name}",
+                    "last_action": step_name,
+                    "action_successful": False
+                }
+                if step_name == "ai_decide_action_node":
+                    aborted["next_tool_suggestion"] = "finalize"
+                self._log(f"ABORTED {step_name}")
+                return aborted
+        # Execute actual step
+        result = func(self, state)
+        if getattr(self.config, "manual_confirm", False):
+            self._log(
+                f"END {step_name} action_successful={result.get('action_successful', False)} "
+                f"likes={result.get('likes_sent', 0)} "
+                f"comments={result.get('comments_sent', 0)} "
+                f"errors={result.get('errors_encountered', 0)}"
+            )
+        return result
+    return wrapper
+
+
 class LangGraphHingeAgent:
     """
     LangGraph-powered Hinge automation agent with Gemini-controlled decision making.
@@ -92,11 +141,93 @@ class LangGraphHingeAgent:
         self.config = config or DEFAULT_CONFIG
         self.ai_client = OpenAI()
         self.graph = self._build_workflow()
+
+        # Manual confirm logging path
+        self.manual_log_path = None
+        if getattr(self.config, "manual_confirm", False):
+            self._init_manual_logging()
+            self._log("Manual confirmation mode enabled; every step requires approval and is logged.")
+
+        # AI trace setup
+        self.ai_trace_file = None
+        if getattr(self.config, "ai_trace", False):
+            self._init_ai_trace_logging()
         
         # Profile batch processing to avoid LangGraph recursion limits
         self.profiles_per_batch = 3  # Process 3 profiles per batch to stay under 25-turn limit
         self.max_turns_per_profile = 8  # Estimated max turns needed per profile
     
+    def _init_manual_logging(self) -> None:
+        """Initialize manual confirmation session logging."""
+        try:
+            os.makedirs(self.config.manual_log_dir, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.manual_log_path = os.path.join(self.config.manual_log_dir, f"manual_{ts}.log")
+            header = (
+                f"Session started {datetime.now().isoformat()} "
+                f"manual_confirm={self.config.manual_confirm} "
+                f"max_profiles={self.max_profiles}\n"
+            )
+            with open(self.manual_log_path, "a", encoding="utf-8") as f:
+                f.write(header)
+        except Exception as e:
+            print(f"[manual] Failed to init log file: {e}")
+            self.manual_log_path = None
+
+    def _log(self, message: str) -> None:
+        """Structured log to console and file with timestamp."""
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        line = f"[{ts}] {message}"
+        print(line)
+        try:
+            if self.manual_log_path:
+                with open(self.manual_log_path, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+        except Exception as e:
+            print(f"[manual] Failed to write log: {e}")
+
+    def _confirm_step(self, step_name: str, state: HingeAgentState) -> bool:
+        """Prompt for user confirmation to proceed with a step. Default is No."""
+        prompt = f"Confirm to proceed with step '{step_name}' [y/N]: "
+        try:
+            answer = input(prompt).strip().lower()
+        except EOFError:
+            answer = ""
+        confirmed = answer in ("y", "yes")
+        self._log(f"CONFIRM {step_name} -> {'YES' if confirmed else 'NO'}")
+        return confirmed
+
+    def _init_ai_trace_logging(self) -> None:
+        """Initialize AI inputs trace logging and propagate to analyzer via env vars."""
+        try:
+            os.makedirs(self.config.ai_trace_log_dir, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.ai_trace_file = os.path.join(self.config.ai_trace_log_dir, f"ai_trace_{ts}.log")
+            # Propagate to analyzer layer
+            os.environ["HINGE_AI_TRACE_FILE"] = os.path.abspath(self.ai_trace_file)
+            os.environ["HINGE_AI_TRACE_CONSOLE"] = "1" if getattr(self.config, "manual_confirm", False) else "0"
+            # Header
+            with open(self.ai_trace_file, "a", encoding="utf-8") as f:
+                f.write(f"AI trace started {datetime.now().isoformat()} ai_trace={self.config.ai_trace}\n")
+        except Exception as e:
+            print(f"[ai-trace] Failed to init AI trace log: {e}")
+            self.ai_trace_file = None
+
+    def _ai_trace_log(self, lines) -> None:
+        """Log AI inputs to the shared ai trace file and optionally to console."""
+        if not getattr(self.config, "ai_trace", False) or not getattr(self, "ai_trace_file", None):
+            return
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        out_lines = [f"[{ts}] {line}" for line in lines]
+        try:
+            with open(self.ai_trace_file, "a", encoding="utf-8") as f:
+                f.write("\n".join(out_lines) + "\n")
+        except Exception as e:
+            print(f"[ai-trace] Failed to write AI trace: {e}")
+        if getattr(self.config, "manual_confirm", False):
+            for l in out_lines:
+                print(l)
+
     def _build_workflow(self) -> StateGraph:
         """Build the LangGraph workflow with Gemini-controlled decision making"""
         
@@ -203,6 +334,7 @@ class LangGraphHingeAgent:
         return "continue"
     
     # Node implementations
+    @gated_step
     def initialize_session_node(self, state: HingeAgentState) -> HingeAgentState:
         """Initialize the automation session"""
         print("🚀 Initializing LangGraph Hinge automation session...")
@@ -261,11 +393,21 @@ class LangGraphHingeAgent:
             "current_screenshot": None
         }
     
+    @gated_step
     def ai_decide_action_node(self, state: HingeAgentState) -> HingeAgentState:
         """Ask AI to analyze current state and decide next action"""
         print(f"🤖 Asking AI for next action (Profile {state['current_profile_index'] + 1}/{state['max_profiles']})")
         
         # Prepare context for AI
+        gc_present = bool(state.get('generated_comment'))
+        comment_open = False
+        try:
+            if state.get('current_screenshot'):
+                _ui = detect_comment_ui_elements(state['current_screenshot'])
+                comment_open = bool(_ui.get('comment_field_found', False))
+        except Exception:
+            comment_open = False
+
         context = f"""
         Current Hinge Automation State:
         - Profile Index: {state['current_profile_index']}/{state['max_profiles']}
@@ -276,6 +418,8 @@ class LangGraphHingeAgent:
         - Profile Text: {state['profile_text'][:300]}...
         - Stuck Count: {state['stuck_count']}
         - Errors: {state['errors_encountered']}
+        - Generated Comment Present: {gc_present}
+        - Comment Interface Open: {comment_open}
         
         Profile Analysis:
         {json.dumps(state.get('profile_analysis', {}), indent=2)[:500]}
@@ -300,6 +444,9 @@ class LangGraphHingeAgent:
         Workflow Guidelines:
         - Always start with capture_screenshot if no current screenshot
         - The general flow is: capture_screenshot > analyze_profile (comprehensive) > make_like_decision > detect_like_button > execute_like > generate_comment > send_comment_with_typing > next profile
+        - Preconditions:
+          • Only choose send_comment_with_typing when Generated Comment Present is True and Comment Interface Open is True
+          • If Comment Interface Open is True and Generated Comment Present is False → the next action must be "generate_comment"
         - analyze_profile automatically performs 3 scrolls and extracts all user content (no need for separate scroll actions)
         - Only like profiles that meet quality criteria based on comprehensive analysis
         - IMPORTANT: Must execute_like (tap like button) BEFORE attempting to comment - comment interface only appears after like button is tapped
@@ -347,6 +494,17 @@ class LangGraphHingeAgent:
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
                     ]
                 }]
+                try:
+                    _sz = os.path.getsize(state['current_screenshot'])
+                except Exception:
+                    _sz = "?"
+                self._ai_trace_log([
+                    "AI_CALL call_id=ai_decide_action model=gpt-4o-mini temperature=0.0 response_format=json_object",
+                    "PROMPT=<<<BEGIN",
+                    *prompt.splitlines(),
+                    "<<<END",
+                    f"IMAGE image_path={state['current_screenshot']} image_size={_sz} bytes"
+                ])
             else:
                 # No screenshot available
                 prompt = f"""
@@ -359,6 +517,12 @@ class LangGraphHingeAgent:
                 """
                 
                 messages = [{"role": "user", "content": prompt}]
+                self._ai_trace_log([
+                    "AI_CALL call_id=ai_decide_action model=gpt-4o-mini temperature=0.0 response_format=json_object",
+                    "PROMPT=<<<BEGIN",
+                    *prompt.splitlines(),
+                    "<<<END",
+                ])
             
             resp = self.ai_client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -370,6 +534,29 @@ class LangGraphHingeAgent:
             decision = json.loads(resp.choices[0].message.content) if resp.choices[0].message and resp.choices[0].message.content else {}
             next_action = decision.get('next_action', 'capture_screenshot')
             reasoning = decision.get('reasoning', 'Default action')
+
+            # Enforce preconditions deterministically (Hybrid Option B)
+            # - If comment interface is open and no generated comment: must generate_comment
+            # - If comment interface is open and we have a generated comment: must send_comment_with_typing
+            # - Never choose send_comment_with_typing when comment interface is not open
+            # - Never choose execute_like while already in comment interface
+            if comment_open:
+                if not gc_present and next_action != "generate_comment":
+                    self._log("Precondition enforcement: forcing 'generate_comment' (modal open, no generated comment).")
+                    next_action = "generate_comment"
+                elif gc_present and next_action != "send_comment_with_typing":
+                    self._log("Precondition enforcement: forcing 'send_comment_with_typing' (modal open, generated comment present).")
+                    next_action = "send_comment_with_typing"
+                if next_action == "execute_like":
+                    # Don't re-tap like when modal is open; prefer to proceed with comment or send-like
+                    if gc_present:
+                        next_action = "send_comment_with_typing"
+                    else:
+                        next_action = "generate_comment"
+            else:
+                if next_action == "send_comment_with_typing":
+                    self._log("Precondition enforcement: 'send_comment_with_typing' chosen but modal is not open → forcing 'execute_like'.")
+                    next_action = "execute_like"
             
             print(f"🎯 AI chose: {next_action}")
             print(f"💭 Reasoning: {reasoning}")
@@ -396,6 +583,7 @@ class LangGraphHingeAgent:
                 "errors_encountered": state["errors_encountered"] + 1
             }
     
+    @gated_step
     def capture_screenshot_node(self, state: HingeAgentState) -> HingeAgentState:
         """Capture current screen screenshot"""
         print("📸 Capturing screenshot...")
@@ -412,6 +600,7 @@ class LangGraphHingeAgent:
             "action_successful": True
         }
     
+    @gated_step
     def analyze_profile_node(self, state: HingeAgentState) -> HingeAgentState:
         """Comprehensive profile analysis with multiple scrolls to capture all content"""
         print("🔍 Starting comprehensive profile analysis...")
@@ -513,6 +702,17 @@ class LangGraphHingeAgent:
             If no user content is visible, return an empty string.
             """
             
+            try:
+                _sz = os.path.getsize(screenshot_path)
+            except Exception:
+                _sz = "?"
+            self._ai_trace_log([
+                "AI_CALL call_id=extract_user_content_only model=gpt-4o-mini temperature=0.0",
+                "PROMPT=<<<BEGIN",
+                *prompt.splitlines(),
+                "<<<END",
+                f"IMAGE image_path={screenshot_path} image_size={_sz} bytes"
+            ])
             resp = self.ai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{
@@ -597,6 +797,17 @@ class LangGraphHingeAgent:
             Be thorough since this represents their complete profile content.
             """
             
+            try:
+                _sz = os.path.getsize(screenshots[-1])
+            except Exception:
+                _sz = "?"
+            self._ai_trace_log([
+                "AI_CALL call_id=analyze_complete_profile model=gpt-4o-mini temperature=0.0 response_format=json_object",
+                "PROMPT=<<<BEGIN",
+                *prompt.splitlines(),
+                "<<<END",
+                f"IMAGE image_path={screenshots[-1]} image_size={_sz} bytes"
+            ])
             resp = self.ai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 response_format={"type": "json_object"},
@@ -624,6 +835,7 @@ class LangGraphHingeAgent:
                 "content_quality": "unknown"
             }
     
+    @gated_step
     def scroll_profile_node(self, state: HingeAgentState) -> HingeAgentState:
         """Scroll to see more profile content"""
         print("📜 Scrolling profile...")
@@ -664,6 +876,7 @@ class LangGraphHingeAgent:
             "action_successful": True
         }
     
+    @gated_step
     def make_like_decision_node(self, state: HingeAgentState) -> HingeAgentState:
         """Make like/dislike decision based on profile analysis"""
         print("🎯 Making like/dislike decision...")
@@ -701,6 +914,7 @@ class LangGraphHingeAgent:
             "profile_analysis": {**analysis, "should_like": should_like}
         }
     
+    @gated_step
     def detect_like_button_node(self, state: HingeAgentState) -> HingeAgentState:
         """Detect like button location using computer vision"""
         print("🎯 Detecting like button with OpenCV...")
@@ -742,6 +956,7 @@ class LangGraphHingeAgent:
             "action_successful": True
         }
     
+    @gated_step
     def execute_like_node(self, state: HingeAgentState) -> HingeAgentState:
         """Execute like action with profile change verification"""
         print("💖 Executing like action...")
@@ -797,11 +1012,10 @@ class LangGraphHingeAgent:
         comment_interface_appeared = comment_ui.get('comment_field_found', False)
         
         if comment_interface_appeared:
-            print("💬 Comment interface appeared - like successful!")
+            print("💬 Comment interface appeared - ready to send like/comment")
             return {
                 **updated_state,
                 "current_screenshot": immediate_screenshot,
-                "likes_sent": state["likes_sent"] + 1,
                 "last_action": "execute_like", 
                 "action_successful": True
             }
@@ -817,11 +1031,10 @@ class LangGraphHingeAgent:
         })
         
         if profile_verification.get('profile_changed', False):
-            print(f"✅ Like successful - moved to new profile (confidence: {profile_verification.get('confidence', 0):.2f})")
+            print(f"✅ Navigation occurred after like tap (confidence: {profile_verification.get('confidence', 0):.2f})")
             return {
                 **updated_state,
                 "current_screenshot": verification_screenshot,
-                "likes_sent": state["likes_sent"] + 1,
                 "current_profile_index": state["current_profile_index"] + 1,
                 "profiles_processed": state["profiles_processed"] + 1,
                 "stuck_count": 0,
@@ -838,6 +1051,7 @@ class LangGraphHingeAgent:
                 "action_successful": False
             }
     
+    @gated_step
     def generate_comment_node(self, state: HingeAgentState) -> HingeAgentState:
         """Generate flirty, date-focused comment for current profile"""
         print("💬 Generating flirty, date-focused comment...")
@@ -882,6 +1096,7 @@ class LangGraphHingeAgent:
             "action_successful": True
         }
     
+    @gated_step
     def type_comment_node(self, state: HingeAgentState) -> HingeAgentState:
         """Type comment text into the comment field"""
         print("⌨️ Typing comment into field...")
@@ -955,6 +1170,7 @@ class LangGraphHingeAgent:
                 "action_successful": False
             }
     
+    @gated_step
     def close_text_interface_node(self, state: HingeAgentState) -> HingeAgentState:
         """Close keyboard and text input interface"""
         print("🔽 Closing text input interface...")
@@ -984,6 +1200,7 @@ class LangGraphHingeAgent:
                 "action_successful": False
             }
     
+    @gated_step
     def send_comment_with_typing_node(self, state: HingeAgentState) -> HingeAgentState:
         """Consolidated comment tool: tap field, type comment, dismiss keyboard, send comment"""
         print("💬 Starting consolidated comment process...")
@@ -1102,6 +1319,7 @@ class LangGraphHingeAgent:
                     **state,
                     "current_screenshot": verification_screenshot,
                     "comments_sent": state["comments_sent"] + 1,
+                    "likes_sent": state["likes_sent"] + 1,
                     "current_profile_index": state["current_profile_index"] + 1,
                     "profiles_processed": state["profiles_processed"] + 1,
                     "stuck_count": 0,
@@ -1118,6 +1336,7 @@ class LangGraphHingeAgent:
                         **state,
                         "current_screenshot": verification_screenshot,
                         "comments_sent": state["comments_sent"] + 1,
+                        "likes_sent": state["likes_sent"] + 1,
                         "last_action": "send_comment_with_typing",
                         "action_successful": True
                     }
@@ -1139,35 +1358,77 @@ class LangGraphHingeAgent:
                 "action_successful": False
             }
     
+    @gated_step
     def send_like_without_comment_node(self, state: HingeAgentState) -> HingeAgentState:
         """Send like without comment as fallback when comment typing fails"""
         print("💖 Sending like without comment (fallback mode)...")
         
         try:
-            # Close any open comment interface first
+            # Take a screenshot to inspect current interface
             fresh_screenshot = capture_screenshot(state["device"], "fallback_like_before_close")
             
-            # Check if comment interface is still open
+            # Check if comment interface is open
             comment_ui = detect_comment_ui_elements(fresh_screenshot)
             
             if comment_ui.get('comment_field_found'):
-                print("📱 Closing comment interface...")
-                # Try to close comment interface using back key or tap outside
-                state["device"].shell("input keyevent KEYCODE_BACK")
-                time.sleep(2)
+                print("📤 Attempting to send like directly from comment interface...")
+                # Try CV to find the send button
+                send_try = detect_send_button_cv(fresh_screenshot)
+                if send_try.get('found'):
+                    send_x = send_try['x']
+                    send_y = send_try['y']
+                    conf = send_try.get('confidence', 0.6)
+                    print(f"✅ Send button found in modal at ({send_x}, {send_y}) - confidence: {conf:.3f}")
+                else:
+                    # Fallback coordinates
+                    send_x = int(state["width"] * 0.67)
+                    send_y = int(state["height"] * 0.75)
+                    conf = 0.5
+                    print(f"⚠️ Using fallback send coordinates in modal ({send_x}, {send_y})")
                 
-                # Verify interface closed
-                post_close_screenshot = capture_screenshot(state["device"], "fallback_after_close")
-                comment_ui_check = detect_comment_ui_elements(post_close_screenshot)
+                # Tap the send button
+                tap_with_confidence(state["device"], send_x, send_y, conf)
+                time.sleep(3)
                 
-                if comment_ui_check.get('comment_field_found'):
-                    print("⚠️ Comment interface still open, trying tap outside...")
-                    # Tap in upper area to close interface
-                    tap(state["device"], int(state["width"] * 0.5), int(state["height"] * 0.2))
-                    time.sleep(2)
-            
-            # Take fresh screenshot for like button detection
-            final_screenshot = capture_screenshot(state["device"], "fallback_like_detection")
+                # Verify like was sent
+                verification_screenshot = capture_screenshot(state["device"], "fallback_like_verification")
+                
+                previous_profile_text = state.get('profile_text', '')
+                current_analysis = state.get('profile_analysis', {})
+                previous_profile_features = {
+                    'age': current_analysis.get('estimated_age', 0),
+                    'name': current_analysis.get('name', ''),
+                    'location': current_analysis.get('location', ''),
+                    'interests': current_analysis.get('interests', [])
+                }
+                
+                profile_verification = self._verify_profile_change_internal({
+                    **state,
+                    "current_screenshot": verification_screenshot,
+                    "previous_profile_text": previous_profile_text,
+                    "previous_profile_features": previous_profile_features
+                })
+                
+                if profile_verification.get('profile_changed', False):
+                    print("✅ Like sent successfully without comment (from modal) - moved to new profile")
+                    return {
+                        **state,
+                        "current_screenshot": verification_screenshot,
+                        "likes_sent": state["likes_sent"] + 1,
+                        "current_profile_index": state["current_profile_index"] + 1,
+                        "profiles_processed": state["profiles_processed"] + 1,
+                        "stuck_count": 0,
+                        "last_action": "send_like_without_comment",
+                        "action_successful": True
+                    }
+                else:
+                    print("⚠️ Modal send may have failed - attempting like button fallback")
+                    # Fall through to like button detection fallback below
+                    final_screenshot = verification_screenshot
+                # Continue fallback in case modal didn’t produce movement
+            else:
+                # Take fresh screenshot for like button detection
+                final_screenshot = capture_screenshot(state["device"], "fallback_like_detection")
             
             # Use CV-based like button detection
             cv_result = detect_like_button_cv(final_screenshot)
@@ -1243,6 +1504,7 @@ class LangGraphHingeAgent:
                 "action_successful": False
             }
     
+    @gated_step
     def execute_dislike_node(self, state: HingeAgentState) -> HingeAgentState:
         """Execute dislike action with profile change verification"""
         print(f"👎 Executing dislike: {state.get('decision_reason', 'criteria not met')}")
@@ -1297,6 +1559,7 @@ class LangGraphHingeAgent:
                 "action_successful": False
             }
     
+    @gated_step
     def navigate_to_next_node(self, state: HingeAgentState) -> HingeAgentState:
         """Navigate to next profile using swipe"""
         print("➡️ Navigating to next profile...")
@@ -1353,6 +1616,7 @@ class LangGraphHingeAgent:
                 "action_successful": False
             }
     
+    @gated_step
     def verify_profile_change_node(self, state: HingeAgentState) -> HingeAgentState:
         """Verify if we've moved to a new profile"""
         print("🔍 Verifying profile change...")
@@ -1369,6 +1633,7 @@ class LangGraphHingeAgent:
             "action_successful": profile_changed
         }
     
+    @gated_step
     def recover_from_stuck_node(self, state: HingeAgentState) -> HingeAgentState:
         """Attempt recovery when stuck using multiple swipe patterns"""
         print("🔄 Attempting recovery from stuck state...")
@@ -1410,6 +1675,7 @@ class LangGraphHingeAgent:
             "action_successful": True
         }
     
+    @gated_step
     def reset_app_node(self, state: HingeAgentState) -> HingeAgentState:
         """Reset the Hinge app when stuck - force close, clear from multitasking, and reopen"""
         print("🔄 Executing app reset to recover from stuck state...")
@@ -1448,6 +1714,7 @@ class LangGraphHingeAgent:
                 "action_successful": False
             }
     
+    @gated_step
     def finalize_session_node(self, state: HingeAgentState) -> HingeAgentState:
         """Finalize the automation session"""
         print("🎉 Finalizing automation session...")
