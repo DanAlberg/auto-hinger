@@ -57,6 +57,7 @@ class AgentConfig:
     # Comment generation
     default_comment: str = "Hey, I'd love to meet up!"
     comment_style: str = "balanced"  # comedic, flirty, straightforward, balanced
+    confirm_before_send: bool = True  # prompt before tapping Send Like
     
     # Debug settings
     save_screenshots: bool = True
@@ -70,6 +71,16 @@ class AgentConfig:
     # AI tracing
     ai_trace: bool = False
     ai_trace_log_dir: str = "logs"
+    
+    # Deterministic control & export settings
+    deterministic_mode: bool = True
+    like_mode: str = "priority"  # "priority" or "normal"
+    export_csv: bool = True
+    export_xlsx: bool = False
+    export_dir: str = "logs"
+    precheck_strict: bool = True
+    sync_check_at_stages: bool = True
+    max_priority_likes_per_session: int = 999999
     
     # Device settings
     device_ip: str = "127.0.0.1"
