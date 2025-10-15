@@ -13,6 +13,33 @@ import config  # ensure .env is loaded at import time
 # Initialize OpenAI client (reads OPENAI_API_KEY from environment)
 _client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# --- AI trace helpers (inputs only) ---
+from datetime import datetime
+
+def _ai_trace_file() -> str:
+    return os.getenv("HINGE_AI_TRACE_FILE", "")
+
+def _ai_trace_console() -> bool:
+    return os.getenv("HINGE_AI_TRACE_CONSOLE", "") == "1"
+
+def _ai_trace_enabled() -> bool:
+    return bool(_ai_trace_file())
+
+def _ai_trace_log(lines):
+    """Write trace lines with timestamp to the configured file and optionally to console."""
+    if not _ai_trace_enabled():
+        return
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    out_lines = [f"[{ts}] {line}" for line in lines]
+    try:
+        with open(_ai_trace_file(), "a", encoding="utf-8") as f:
+            f.write("\n".join(out_lines) + "\n")
+    except Exception:
+        pass
+    if _ai_trace_console():
+        for l in out_lines:
+            print(l)
+
 
 def _b64_image(image_path: str) -> str:
     with open(image_path, "rb") as f:
@@ -20,6 +47,13 @@ def _b64_image(image_path: str) -> str:
 
 
 def _chat_text(prompt: str, temperature: float = 0.2, model: str = "gpt-4o-mini") -> str:
+    # AI trace: log the prompt exactly as sent (no images here)
+    _ai_trace_log([
+        f"AI_CALL call_id=chat_text model={model} temperature={temperature}",
+        "PROMPT=<<<BEGIN",
+        *prompt.splitlines(),
+        "<<<END",
+    ])
     resp = _client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
@@ -32,6 +66,18 @@ def _chat_text(prompt: str, temperature: float = 0.2, model: str = "gpt-4o-mini"
 def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float = 0.0, model: str = "gpt-4o-mini") -> Dict[str, Any]:
     messages: List[Dict[str, Any]] = []
     if image_path:
+        # AI trace: log prompt and image path + size (never log base64)
+        try:
+            _sz = os.path.getsize(image_path)
+        except Exception:
+            _sz = "?"
+        _ai_trace_log([
+            f"AI_CALL call_id=chat_json model={model} temperature={temperature} response_format=json_object",
+            "PROMPT=<<<BEGIN",
+            *prompt.splitlines(),
+            "<<<END",
+            f"IMAGE image_path={image_path} image_size={_sz} bytes"
+        ])
         b64 = _b64_image(image_path)
         messages.append({
             "role": "user",
@@ -41,6 +87,12 @@ def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float
             ]
         })
     else:
+        _ai_trace_log([
+            f"AI_CALL call_id=chat_json model={model} temperature={temperature} response_format=json_object",
+            "PROMPT=<<<BEGIN",
+            *prompt.splitlines(),
+            "<<<END",
+        ])
         messages.append({"role": "user", "content": prompt})
 
     resp = _client.chat.completions.create(
@@ -81,6 +133,19 @@ def extract_text_from_image(image_path: str) -> str:
 
     Return only the extracted text content, formatted cleanly without any analysis or commentary.
     """
+    # AI trace: log prompt and image path + size (never log base64)
+    try:
+        _sz = os.path.getsize(image_path)
+    except Exception:
+        _sz = "?"
+    _ai_trace_log([
+        "AI_CALL call_id=extract_text_from_image model=gpt-4o-mini temperature=0.2",
+        "PROMPT=<<<BEGIN",
+        *prompt.splitlines(),
+        "<<<END",
+        f"IMAGE image_path={image_path} image_size={_sz} bytes"
+    ])
+
     messages = [{
         "role": "user",
         "content": [

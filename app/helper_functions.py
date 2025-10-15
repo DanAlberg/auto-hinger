@@ -367,7 +367,8 @@ def detect_like_button_cv(screenshot_path):
 
 def detect_send_button_cv(screenshot_path):
     """
-    Detect send button using OpenCV template matching
+    Detect send button using OpenCV template matching.
+    Tries both standard and priority send button templates and returns the best match.
     
     Returns:
         dict: {
@@ -376,70 +377,88 @@ def detect_send_button_cv(screenshot_path):
             'y': int,
             'confidence': float,
             'width': int,
-            'height': int
+            'height': int,
+            'top_left_x': int,
+            'top_left_y': int,
+            'matched_template': str
         }
     """
     try:
-        # Load template image
-        template_path = "assets/send_button.png"
-        if not os.path.exists(template_path):
-            print(f"❌ Send button template not found: {template_path}")
-            return {'found': False, 'confidence': 0.0}
-        
-        # Load screenshot and template
+        # Load screenshot
         screenshot = cv2.imread(screenshot_path)
-        template = cv2.imread(template_path)
-        
         if screenshot is None:
             print(f"❌ Could not load screenshot: {screenshot_path}")
             return {'found': False, 'confidence': 0.0}
-            
-        if template is None:
-            print(f"❌ Could not load template: {template_path}")
-            return {'found': False, 'confidence': 0.0}
-        
-        # Get template dimensions
-        template_height, template_width = template.shape[:2]
-        
-        # Convert to grayscale for better matching
         screenshot_gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
-        template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-        
-        # Perform template matching
-        result = cv2.matchTemplate(screenshot_gray, template_gray, cv2.TM_CCOEFF_NORMED)
-        
-        # Find the best match
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-        
-        # max_val is the confidence score (0-1)
-        confidence = float(max_val)
-        
-        # Calculate center coordinates
-        top_left = max_loc
-        center_x = top_left[0] + template_width // 2
-        center_y = top_left[1] + template_height // 2
-        
-        # Consider it found if confidence is above threshold
-        confidence_threshold = 0.6  # Lower threshold for send button as it may have different styles
-        found = confidence >= confidence_threshold
-        
-        print(f"🎯 CV Send Button Detection:")
-        print(f"   📍 Center: ({center_x}, {center_y})")
-        print(f"   📐 Template size: {template_width}x{template_height}")
-        print(f"   🎯 Confidence: {confidence:.3f}")
-        print(f"   ✅ Found: {found} (threshold: {confidence_threshold})")
-        
-        return {
-            'found': found,
-            'x': center_x,
-            'y': center_y, 
-            'confidence': confidence,
-            'width': template_width,
-            'height': template_height,
-            'top_left_x': top_left[0],
-            'top_left_y': top_left[1]
+
+        # Candidate templates: standard send and priority send
+        candidates = [
+            ("assets/send_button.png", "send"),
+            ("assets/send_priority_button.png", "send_priority"),
+        ]
+
+        best = {
+            'found': False,
+            'x': 0,
+            'y': 0,
+            'confidence': 0.0,
+            'width': 0,
+            'height': 0,
+            'top_left_x': 0,
+            'top_left_y': 0,
+            'matched_template': ""
         }
-        
+        confidence_threshold = 0.6  # single threshold for simplicity
+
+        for template_path, label in candidates:
+            if not os.path.exists(template_path):
+                print(f"⚠️  Send template not found: {template_path}")
+                continue
+
+            template = cv2.imread(template_path)
+            if template is None:
+                print(f"❌ Could not load template: {template_path}")
+                continue
+
+            th, tw = template.shape[:2]
+            template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+
+            # Perform template matching
+            result = cv2.matchTemplate(screenshot_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+            confidence = float(max_val)
+            top_left = max_loc
+            center_x = top_left[0] + tw // 2
+            center_y = top_left[1] + th // 2
+            found = confidence >= confidence_threshold
+
+            print(f"🎯 CV Send Button Detection ({label}):")
+            print(f"   📍 Center: ({center_x}, {center_y})")
+            print(f"   📐 Template size: {tw}x{th}")
+            print(f"   🎯 Confidence: {confidence:.3f}")
+            print(f"   ✅ Found: {found} (threshold: {confidence_threshold})")
+
+            if confidence > best['confidence']:
+                best.update({
+                    'found': found,
+                    'x': center_x,
+                    'y': center_y,
+                    'confidence': confidence,
+                    'width': tw,
+                    'height': th,
+                    'top_left_x': top_left[0],
+                    'top_left_y': top_left[1],
+                    'matched_template': label
+                })
+
+        if best['matched_template']:
+            print(f"✅ Best send match: {best['matched_template']} with confidence {best['confidence']:.3f} (found={best['found']})")
+        else:
+            print("❌ No send button templates matched.")
+
+        return best if best['matched_template'] else {'found': False, 'confidence': 0.0}
+
     except Exception as e:
         print(f"❌ CV send button detection failed: {e}")
         return {'found': False, 'confidence': 0.0}

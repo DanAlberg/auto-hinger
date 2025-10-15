@@ -57,6 +57,7 @@ Warning
 - --device-ip: ADB server host (default: 127.0.0.1)
 - --verbose, -v: Enable verbose logging
 - --no-screenshots: Disable saving screenshots to disk
+- --manual-confirm, --confirm-steps: Require explicit confirmation before each step; logs all actions to logs/ (default: disabled)
 
 Examples
 - Process 20 profiles with verbose logging:
@@ -67,6 +68,9 @@ Examples
 
 - Conservative preset for safer automation:
   uv run python main_agent.py --config conservative --profiles 3
+
+- Manual confirm mode for first run (no action without approval; detailed logs to logs/):
+  uv run python main_agent.py --profiles 1 --config conservative --manual-confirm
 
 ## Architecture (Overview)
 - Entry point: app/main_agent.py
