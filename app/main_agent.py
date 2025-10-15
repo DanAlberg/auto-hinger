@@ -77,6 +77,12 @@ def parse_arguments():
         help="Testing mode: do not tap LIKE or SEND. No actual likes/comments are sent."
     )
     parser.add_argument(
+        "--scrape-only",
+        dest="scrape_only",
+        action="store_true",
+        help="Scrape profile content only; do not like or dislike."
+    )
+    parser.add_argument(
         "--no-excel", "--no-xlsx",
         dest="no_excel",
         action="store_true",
@@ -109,6 +115,7 @@ def get_config(config_name: str, args) -> AgentConfig:
     config.deterministic_mode = not args.ai_routing
     config.export_xlsx = not args.no_excel
     config.dry_run = getattr(args, "dry_run", False)
+    config.scrape_only = getattr(args, "scrape_only", False)
     
     return config
 
@@ -160,6 +167,7 @@ async def main():
         print(f"🧭 Deterministic Mode: {config.deterministic_mode}")
         print(f"📊 Export XLSX: {config.export_xlsx}")
         print(f"🧪 Dry Run Mode: {getattr(config, 'dry_run', False)}")
+        print(f"🧲 Scrape Only Mode: {getattr(config, 'scrape_only', False)}")
         print(f"🤖 AI Controller: OpenAI + LangGraph")
         print()
         

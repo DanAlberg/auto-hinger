@@ -19,13 +19,14 @@ from functools import wraps
 from helper_functions import (
     connect_device, get_screen_resolution, open_hinge, reset_hinge_app,
     capture_screenshot, tap, tap_with_confidence, swipe,
-    dismiss_keyboard, clear_screenshots_directory, detect_like_button_cv, detect_send_button_cv, detect_comment_field_cv, detect_keyboard_tick_cv, input_text_robust
+    dismiss_keyboard, clear_screenshots_directory, detect_like_button_cv, detect_send_button_cv, detect_comment_field_cv, detect_keyboard_tick_cv, detect_age_icon_cv, detect_age_icon_cv_multi, infer_carousel_y_by_edges, are_images_similar, input_text_robust
 )
 from analyzer import (
     extract_text_from_image, analyze_dating_ui,
     find_ui_elements, analyze_profile_scroll_content,
     detect_comment_ui_elements, generate_comment, generate_contextual_date_comment
 )
+from batch_payload import build_llm_batch_payload, build_profile_prompt
 from data_store import store_generated_comment, calculate_template_success_rates
 from prompt_engine import update_template_weights
 from profile_export import ProfileExporter
@@ -82,6 +83,9 @@ class HingeAgentState(TypedDict):
     
     # Batch processing for LangGraph recursion limit management
     batch_start_index: int
+
+    # Future: prebuilt LLM batch request (no submission performed)
+    llm_batch_request: Dict[str, Any]
 
 
 def gated_step(func):
@@ -641,15 +645,9 @@ class LangGraphHingeAgent:
     
     @gated_step
     def analyze_profile_node(self, state: HingeAgentState) -> HingeAgentState:
-        """Comprehensive profile analysis with multiple scrolls to capture all content"""
-        print("🔍 Starting comprehensive profile analysis...")
-        
-        if not state['current_screenshot']:
-            return {
-                **state,
-                "last_action": "analyze_profile",
-                "action_successful": False
-            }
+        """Comprehensive profile analysis with new full scrape (horizontal + vertical)"""
+        print("🔍 Starting comprehensive profile analysis (new full scrape)...")
+        return self._analyze_profile_full_scrape(state)
         
         # Collect multiple screenshots by scrolling through the profile
         all_screenshots = []
@@ -788,13 +786,195 @@ class LangGraphHingeAgent:
         
         return '\n'.join(all_lines)
     
-    def _analyze_complete_profile(self, screenshots: list, combined_text: str) -> dict:
-        """Perform comprehensive analysis on the complete profile content"""
+    def _analyze_profile_full_scrape(self, state: HingeAgentState) -> HingeAgentState:
+        """New flow:
+        1) Ensure we have a screenshot
+        2) Full vertical scroll once
+        3) Screenshot
+        4) Detect age icon to get Y for horizontal carousel; horizontally swipe until stable
+        5) Vertical paging one screen at a time
+        6) Final single-call analysis with all collected screenshots
+        """
         try:
-            # Use the most recent screenshot for visual analysis
-            with open(screenshots[-1], 'rb') as f:
-                b64 = base64.b64encode(f.read()).decode('utf-8')
+            if not state.get('current_screenshot'):
+                return {
+                    **state,
+                    "last_action": "analyze_profile",
+                    "action_successful": False
+                }
+            width = state["width"]
+            height = state["height"]
+            device = state["device"]
             
+            all_screenshots: list[str] = []
+            # No per-screenshot text extraction; dedup by image similarity and batch analyze once
+            
+            # Use current screenshot as starting point
+            start_shot = state['current_screenshot']
+            all_screenshots.append(start_shot)
+            
+            # Full vertical settle scroll (~3/4 screen) to reduce lazy-load jitter without overshooting
+            x = int(width * 0.5)
+            y1 = int(height * 0.75)
+            y2 = int(height * 0.35)
+            swipe(device, x, y1, x, y2, duration=700)
+            time.sleep(2)
+            post_full_scroll = capture_screenshot(device, f"profile_{state['current_profile_index']}_post_full_scroll")
+            all_screenshots.append(post_full_scroll)
+            
+            # Detect age icon Y for horizontal carousel (multi-scale, ROI, optional edges)
+            cfg = self.config
+            age_cv = detect_age_icon_cv_multi(
+                post_full_scroll,
+                template_path="assets/age_icon.png",
+                roi_top=getattr(cfg, "age_icon_roi", (0.0, 0.55))[0],
+                roi_bottom=getattr(cfg, "age_icon_roi", (0.0, 0.55))[1],
+                scales=None,  # internal defaults or computed list
+                threshold=getattr(cfg, "age_icon_threshold", 0.55),
+                use_edges=getattr(cfg, "age_icon_use_edges", True),
+                save_debug=True
+            )
+            if age_cv.get("found"):
+                y_horizontal = int(age_cv["y"])
+                print(f"✅ Age icon Y detected at {y_horizontal}")
+            else:
+                # Fallback: infer carousel Y by vertical edge profile in upper half of screen
+                infer = infer_carousel_y_by_edges(
+                    post_full_scroll,
+                    roi_top=getattr(cfg, "carousel_y_roi_top", 0.15),
+                    roi_bottom=getattr(cfg, "carousel_y_roi_bottom", 0.60),
+                    smooth_kernel=getattr(cfg, "carousel_y_smooth_kernel", 21)
+                )
+                if infer.get("found"):
+                    y_horizontal = int(infer["y"])
+                    print(f"✅ Inferred carousel Y via edges at {y_horizontal}")
+                else:
+                    print("❌ Could not determine horizontal carousel Y (age icon not found; edge inference failed).")
+                    return {
+                        **state,
+                        "last_action": "analyze_profile",
+                        "action_successful": False,
+                        "errors_encountered": state.get("errors_encountered", 0) + 1
+                    }
+            
+            # Horizontal swipe collection until stable (image-dedup)
+            hshots, _ = self._collect_horizontal_content(state, y_horizontal)
+            all_screenshots.extend(hshots)
+            
+            # Vertical paging collection until stable (image-dedup)
+            vshots, _ = self._collect_vertical_pages(state)
+            all_screenshots.extend(vshots)
+            
+            # Analyze once with all unique screenshots (no interim AI calls)
+            combined_text = ""
+            print(f"🖼️ Unique screenshots collected: {len(all_screenshots)}")
+            # Build (but do not submit) a reusable batch payload for future LLM extraction
+            try:
+                llm_payload = build_llm_batch_payload(all_screenshots, prompt=build_profile_prompt())
+            except Exception:
+                llm_payload = {}
+            comprehensive = self._analyze_complete_profile(all_screenshots, combined_text)
+            current_screenshot = all_screenshots[-1] if all_screenshots else state['current_screenshot']
+            
+            quality_score = comprehensive.get('profile_quality_score', 0)
+            print(f"📊 Comprehensive profile quality: {quality_score}/10")
+            
+            return {
+                **state,
+                "current_screenshot": current_screenshot,
+                "profile_text": combined_text,
+                "profile_analysis": comprehensive,
+                "llm_batch_request": llm_payload,
+                "last_action": "analyze_profile",
+                "action_successful": True
+            }
+        except Exception as e:
+            print(f"❌ Error in new analyze_profile flow: {e}")
+            return {
+                **state,
+                "last_action": "analyze_profile",
+                "action_successful": False,
+                "errors_encountered": state.get("errors_encountered", 0) + 1
+            }
+    
+    def _collect_horizontal_content(self, state: HingeAgentState, y_coord: int) -> tuple[list, list]:
+        """Swipe horizontally across the photo carousel, capturing until frames stabilize (aHash); no interim AI calls."""
+        cfg = self.config
+        width = state["width"]
+        device = state["device"]
+        start_p, end_p = getattr(cfg, "horizontal_swipe_dx", (0.80, 0.20))
+        x1 = int(width * start_p)
+        x2 = int(width * end_p)
+        stable_needed = int(getattr(cfg, "image_stable_repeats", getattr(cfg, "content_stable_repeats", 2)))
+        max_swipes = int(getattr(cfg, "max_horizontal_swipes", 8))
+        hash_size = int(getattr(cfg, "image_hash_size", 8))
+        hash_thresh = int(getattr(cfg, "image_hash_threshold", 5))
+        
+        unique_shots: list[str] = []
+        stable = 0
+        last_kept: str | None = None
+        
+        for i in range(1, max_swipes + 1):
+            print(f"➡️ Horizontal swipe {i}/{max_swipes} at y={y_coord}")
+            swipe(device, x1, y_coord, x2, y_coord, duration=600)
+            time.sleep(2)
+            shot = capture_screenshot(device, f"profile_{state['current_profile_index']}_hscroll_{i}")
+            
+            if last_kept is None or not are_images_similar(shot, last_kept, hash_size=hash_size, threshold=hash_thresh):
+                unique_shots.append(shot)
+                last_kept = shot
+                stable = 0
+            else:
+                stable += 1
+                print(f"🟨 Horizontal duplicate detected ({stable}/{stable_needed})")
+            
+            if stable >= stable_needed:
+                print("✅ Horizontal frames stabilized; stopping horizontal swipes.")
+                break
+        
+        return unique_shots, []
+    
+    def _collect_vertical_pages(self, state: HingeAgentState) -> tuple[list, list]:
+        """Scroll down one screen at a time, capturing until frames stabilize (aHash); no interim AI calls."""
+        cfg = self.config
+        width = state["width"]
+        height = state["height"]
+        device = state["device"]
+        max_pages = int(getattr(cfg, "max_vertical_pages", 10))
+        stable_needed = int(getattr(cfg, "image_stable_repeats", getattr(cfg, "content_stable_repeats", 2)))
+        hash_size = int(getattr(cfg, "image_hash_size", 8))
+        hash_thresh = int(getattr(cfg, "image_hash_threshold", 5))
+        
+        unique_shots: list[str] = []
+        stable = 0
+        last_kept: str | None = None
+        
+        for i in range(1, max_pages + 1):
+            print(f"📜 Vertical page {i}/{max_pages}")
+            sx = int(width * 0.5)
+            sy1 = int(height * 0.80)
+            sy2 = int(height * 0.20)
+            swipe(device, sx, sy1, sx, sy2, duration=600)
+            time.sleep(2)
+            shot = capture_screenshot(device, f"profile_{state['current_profile_index']}_vpage_{i}")
+            
+            if last_kept is None or not are_images_similar(shot, last_kept, hash_size=hash_size, threshold=hash_thresh):
+                unique_shots.append(shot)
+                last_kept = shot
+                stable = 0
+            else:
+                stable += 1
+                print(f"🟨 Vertical duplicate detected ({stable}/{stable_needed})")
+            
+            if stable >= stable_needed:
+                print("✅ Vertical frames stabilized; stopping vertical paging.")
+                break
+        
+        return unique_shots, []
+    
+    def _analyze_complete_profile(self, screenshots: list, combined_text: str) -> dict:
+        """Perform comprehensive analysis on the complete profile content using a single API call with all images."""
+        try:
             prompt = f"""
             Analyze this complete dating profile based on the comprehensive content below.
             This content was extracted from multiple screenshots covering the entire profile.
@@ -835,36 +1015,36 @@ class LangGraphHingeAgent:
             
             Be thorough since this represents their complete profile content.
             """
-            
-            try:
-                _sz = os.path.getsize(screenshots[-1])
-            except Exception:
-                _sz = "?"
-            self._ai_trace_log([
+            # Build messages with all screenshots attached
+            content_parts = [{"type": "text", "text": prompt}]
+            trace_lines = [
                 "AI_CALL call_id=analyze_complete_profile model=gpt-4o-mini temperature=0.0 response_format=json_object",
                 "PROMPT=<<<BEGIN",
                 *prompt.splitlines(),
                 "<<<END",
-                f"IMAGE image_path={screenshots[-1]} image_size={_sz} bytes"
-            ])
+                f"IMAGES count={len(screenshots)}"
+            ]
+            for p in screenshots:
+                try:
+                    _sz = os.path.getsize(p)
+                except Exception:
+                    _sz = "?"
+                self._ai_trace_log([f"IMAGE image_path={p} image_size={_sz} bytes"])
+                with open(p, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode("utf-8")
+                content_parts.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
+            self._ai_trace_log(trace_lines)
+            
             resp = self.ai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 response_format={"type": "json_object"},
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
-                    ]
-                }],
+                messages=[{"role": "user", "content": content_parts}],
                 temperature=0.0
             )
-            
             try:
                 return json.loads(resp.choices[0].message.content or "{}")
             except Exception:
                 return {}
-            
         except Exception as e:
             print(f"❌ Error in comprehensive analysis: {e}")
             return {
@@ -1930,6 +2110,20 @@ class LangGraphHingeAgent:
         A single attempt per step; failures fail-fast (no retries).
         """
         s = state
+
+        # Scrape-only mode: extract full profile and do not like/dislike
+        if getattr(self.config, "scrape_only", False):
+            s = self.capture_screenshot_node(s)
+            if not s.get("action_successful"):
+                return self._fail(s, "Failed to capture screenshot (scrape-only)", "capture_screenshot")
+            s = self.analyze_profile_node(s)
+            if not s.get("action_successful"):
+                return self._fail(s, "Failed to analyze profile (scrape-only)", "analyze_profile")
+            # Optionally navigate to next for continued scraping
+            s_nav = self.navigate_to_next_node(s)
+            if not s_nav.get("action_successful"):
+                return self._fail(s_nav, "Failed to navigate to next profile (scrape-only)", "navigate_to_next")
+            return s_nav
 
         # 1) Capture screenshot
         s = self.capture_screenshot_node(s)

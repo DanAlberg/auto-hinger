@@ -651,3 +651,300 @@ def detect_keyboard_tick_cv(screenshot_path, template_path="assets/tick.png"):
     except Exception as e:
         print(f"❌ CV tick detection failed: {e}")
         return {'found': False, 'confidence': 0.0}
+
+
+def detect_age_icon_cv(screenshot_path, template_path="assets/age_icon.png"):
+    """
+    Detect the profile 'age' icon using OpenCV template matching to infer the Y
+    coordinate of the horizontal photo scroller.
+
+    Returns:
+        dict: {
+            'found': bool,
+            'x': int,
+            'y': int,
+            'confidence': float,
+            'width': int,
+            'height': int,
+            'top_left_x': int,
+            'top_left_y': int
+        }
+    """
+    try:
+        # Load screenshot
+        screenshot = cv2.imread(screenshot_path)
+        if screenshot is None:
+            print(f"❌ Could not load screenshot: {screenshot_path}")
+            return {'found': False, 'confidence': 0.0}
+        screenshot_gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
+
+        # Load age icon template
+        if not os.path.exists(template_path):
+            print(f"❌ Age icon template not found: {template_path}")
+            return {'found': False, 'confidence': 0.0}
+        template = cv2.imread(template_path)
+        if template is None:
+            print(f"❌ Could not load template: {template_path}")
+            return {'found': False, 'confidence': 0.0}
+        th, tw = template.shape[:2]
+        template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+
+        # Perform template matching
+        result = cv2.matchTemplate(screenshot_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+        confidence = float(max_val)
+        top_left = max_loc
+        center_x = top_left[0] + tw // 2
+        center_y = top_left[1] + th // 2
+
+        # Threshold similar to like/comment buttons, tune as needed
+        threshold = 0.65
+        found = confidence >= threshold
+
+        print("🎯 CV Age Icon Detection:")
+        print(f"   📍 Center: ({center_x}, {center_y})")
+        print(f"   📐 Template size: {tw}x{th}")
+        print(f"   🎯 Confidence: {confidence:.3f}")
+        print(f"   ✅ Found: {found} (threshold: {threshold})")
+
+        return {
+            'found': found,
+            'x': center_x,
+            'y': center_y,
+            'confidence': confidence,
+            'width': tw,
+            'height': th,
+            'top_left_x': top_left[0],
+            'top_left_y': top_left[1]
+        }
+
+    except Exception as e:
+        print(f"❌ CV age icon detection failed: {e}")
+        return {'found': False, 'confidence': 0.0}
+
+
+def detect_age_icon_cv_multi(
+    screenshot_path: str,
+    template_path: str = "assets/age_icon.png",
+    roi_top: float = 0.0,
+    roi_bottom: float = 0.55,
+    scales: list = None,
+    threshold: float = 0.55,
+    use_edges: bool = True,
+    save_debug: bool = True
+) -> dict:
+    """
+    Robust age icon detection:
+    - Searches within a vertical ROI (fraction of screen height).
+    - Tries multiple scales of the template.
+    - Optionally matches on edges to reduce tint/contrast sensitivity.
+    - Writes a debug overlay image when save_debug=True.
+
+    Returns:
+        dict: {
+            'found': bool,
+            'x': int, 'y': int,
+            'confidence': float,
+            'width': int, 'height': int,
+            'top_left_x': int, 'top_left_y': int,
+            'scale': float,
+            'debug_image_path': str
+        }
+    """
+    try:
+        img = cv2.imread(screenshot_path)
+        if img is None:
+            print(f"❌ Could not load screenshot: {screenshot_path}")
+            return {'found': False, 'confidence': 0.0}
+        h, w = img.shape[:2]
+        y0 = max(0, int(h * roi_top))
+        y1 = min(h, int(h * roi_bottom))
+        roi = img[y0:y1, :].copy()
+        if roi.size == 0:
+            print("❌ ROI empty for age icon detection")
+            return {'found': False, 'confidence': 0.0}
+
+        tpl = cv2.imread(template_path)
+        if tpl is None:
+            print(f"❌ Could not load age icon template: {template_path}")
+            return {'found': False, 'confidence': 0.0}
+
+        # Prepare base images
+        if use_edges:
+            roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            roi_proc = cv2.Canny(roi_gray, 50, 150)
+        else:
+            roi_proc = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+        base_tpl_gray = cv2.cvtColor(tpl, cv2.COLOR_BGR2GRAY)
+
+        # Build scale list
+        if not scales:
+            scales = [round(s, 2) for s in np.arange(0.6, 1.51, 0.1).tolist()]
+
+        best = {
+            'found': False, 'confidence': 0.0, 'x': 0, 'y': 0,
+            'width': 0, 'height': 0, 'top_left_x': 0, 'top_left_y': 0,
+            'scale': 1.0, 'debug_image_path': ""
+        }
+
+        method = cv2.TM_CCOEFF_NORMED
+        for s in scales:
+            # Resize template for this scale
+            tw = max(1, int(base_tpl_gray.shape[1] * s))
+            th = max(1, int(base_tpl_gray.shape[0] * s))
+            tpl_s = cv2.resize(base_tpl_gray, (tw, th), interpolation=cv2.INTER_AREA)
+            if use_edges:
+                tpl_s = cv2.Canny(tpl_s, 50, 150)
+
+            if roi_proc.shape[0] < tpl_s.shape[0] or roi_proc.shape[1] < tpl_s.shape[1]:
+                continue
+
+            res = cv2.matchTemplate(roi_proc, tpl_s, method)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+            if max_val > best['confidence']:
+                top_left = max_loc
+                center_x = top_left[0] + tw // 2
+                center_y = top_left[1] + th // 2
+                # Convert to full-image coordinates
+                full_x = center_x
+                full_y = y0 + center_y
+                best.update({
+                    'confidence': float(max_val),
+                    'x': int(full_x),
+                    'y': int(full_y),
+                    'width': int(tw),
+                    'height': int(th),
+                    'top_left_x': int(top_left[0]),
+                    'top_left_y': int(y0 + top_left[1]),
+                    'scale': float(s),
+                })
+
+        best['found'] = best['confidence'] >= threshold
+
+        # Debug overlay
+        if save_debug:
+            dbg = img.copy()
+            if best['width'] > 0 and best['height'] > 0:
+                tl = (best['top_left_x'], best['top_left_y'])
+                br = (best['top_left_x'] + best['width'], best['top_left_y'] + best['height'])
+                color = (0, 255, 0) if best['found'] else (0, 0, 255)
+                cv2.rectangle(dbg, tl, br, color, 3)
+                cv2.putText(
+                    dbg, f"conf={best['confidence']:.2f}, s={best['scale']:.2f}",
+                    (tl[0], max(0, tl[1]-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA
+                )
+            dbg_path = os.path.join("images", f"debug_age_icon_{int(time.time()*1000)}.png")
+            try:
+                os.makedirs("images", exist_ok=True)
+                cv2.imwrite(dbg_path, dbg)
+                best['debug_image_path'] = dbg_path
+                print(f"🖼️  Age icon debug overlay: {dbg_path}")
+            except Exception as _:
+                pass
+
+        print(f"🎯 Age icon multi-scale result: found={best['found']} conf={best['confidence']:.3f} scale={best['scale']:.2f}")
+        return best
+
+    except Exception as e:
+        print(f"❌ Multi-scale age icon detection failed: {e}")
+        return {'found': False, 'confidence': 0.0}
+
+
+def infer_carousel_y_by_edges(
+    screenshot_path: str,
+    roi_top: float = 0.15,
+    roi_bottom: float = 0.60,
+    smooth_kernel: int = 21
+) -> dict:
+    """
+    Infer a good horizontal swipe Y by finding the row with strongest vertical edges
+    in a top-half ROI (images carousel tends to have strong vertical edges).
+    Returns:
+        {'found': bool, 'y': int, 'score': float, 'debug_image_path': str}
+    """
+    try:
+        img = cv2.imread(screenshot_path)
+        if img is None:
+            print(f"❌ Could not load screenshot: {screenshot_path}")
+            return {'found': False}
+        h, w = img.shape[:2]
+        y0 = max(0, int(h * roi_top))
+        y1 = min(h, int(h * roi_bottom))
+        roi = img[y0:y1, :].copy()
+        if roi.size == 0:
+            return {'found': False}
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        # Emphasize vertical edges (Sobel X)
+        sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        absx = np.abs(sobelx)
+        # Sum of vertical edges per row
+        row_strength = absx.sum(axis=1)
+        # Smooth to reduce noise
+        if smooth_kernel > 1 and smooth_kernel % 2 == 1:
+            row_strength = cv2.GaussianBlur(row_strength.reshape(-1,1), (1, smooth_kernel), 0).flatten()
+        idx = int(np.argmax(row_strength))
+        score = float(row_strength[idx])
+        y_guess = y0 + idx
+
+        # Debug overlay: draw horizontal line
+        dbg = img.copy()
+        cv2.line(dbg, (0, y_guess), (w, y_guess), (255, 0, 0), 2)
+        dbg_path = os.path.join("images", f"debug_carousel_y_{int(time.time()*1000)}.png")
+        try:
+            os.makedirs("images", exist_ok=True)
+            cv2.imwrite(dbg_path, dbg)
+            print(f"🖼️  Carousel Y debug overlay: {dbg_path} (y={y_guess}, score={score:.1f})")
+        except Exception:
+            pass
+
+        return {'found': True, 'y': int(y_guess), 'score': score, 'debug_image_path': dbg_path}
+    except Exception as e:
+        print(f"❌ Failed to infer carousel Y by edges: {e}")
+        return {'found': False}
+
+
+# --- Image similarity (aHash) utilities for dedup/stabilization ---
+
+def perceptual_hash_ahash(image_path: str, hash_size: int = 8) -> np.ndarray:
+    """
+    Compute a simple average hash (aHash) of an image.
+    Returns a boolean numpy array of shape (hash_size*hash_size,) representing bits.
+    """
+    try:
+        img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return np.array([], dtype=np.bool_)
+        # Resize to hash_size x hash_size
+        small = cv2.resize(img, (hash_size, hash_size), interpolation=cv2.INTER_AREA)
+        avg = small.mean()
+        bits = (small.flatten() > avg)
+        return bits
+    except Exception:
+        return np.array([], dtype=np.bool_)
+
+
+def hamming_distance(h1: np.ndarray, h2: np.ndarray) -> int:
+    """
+    Compute Hamming distance between two boolean bit arrays of same length.
+    """
+    if h1.size == 0 or h2.size == 0 or h1.shape != h2.shape:
+        return 64  # effectively 'very different' for default 8x8
+    return int(np.count_nonzero(h1 ^ h2))
+
+
+def are_images_similar(path1: str, path2: str, hash_size: int = 8, threshold: int = 5) -> bool:
+    """
+    Compare two images using aHash and return True if they are similar within threshold.
+    Lower threshold => stricter equality. Default threshold 5 works well for near-identical frames.
+    """
+    h1 = perceptual_hash_ahash(path1, hash_size=hash_size)
+    h2 = perceptual_hash_ahash(path2, hash_size=hash_size)
+    dist = hamming_distance(h1, h2)
+    try:
+        print(f"🧮 aHash compare: dist={dist} (threshold={threshold}) for:\n  {os.path.basename(path1)}\n  {os.path.basename(path2)}")
+    except Exception:
+        pass
+    return dist <= threshold
