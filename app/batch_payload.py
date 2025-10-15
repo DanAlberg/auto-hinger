@@ -16,19 +16,19 @@ def build_profile_prompt() -> str:
     return """
     Analyze all provided dating profile screenshots together and extract a thorough, structured summary.
 
-    Return JSON with exactly these fields (use null or empty arrays/objects when unknown or not present):
+    Return ONLY a strict JSON object with exactly these fields (keys must exist exactly as named; use null or empty arrays/objects when not visible on-screen). Do NOT infer or assume anything that is not explicitly visible on the screenshots.
 
     {
       "sexuality": "string|null",
-      "name": "string|null",
-      "age": "number|null",
-      "height": "string|null",
-      "location": "string|null",
+      "name": "string|null",                  // REQUIRED KEY (value null if not visible)
+      "age": "number|null",                   // REQUIRED KEY (value null if not visible)
+      "height": "string|null",                // REQUIRED KEY (value null if not visible)
+      "location": "string|null",              // REQUIRED KEY (value null if not visible)
       "ethnicity": "string|null",
       "current_children": "string|null",
-      "family_plans": "string|null",           // future children; e.g., "wants kids", "doesn't want"
+      "family_plans": "string|null",          // one of: "Don't want children", "Want children", "Open to children", "Not sure yet", "Prefer not to say"; or null if hidden
       "covid_vaccine": "string|null",
-      "pets": {                                // booleans where possible; else null
+      "pets": {                               // booleans where possible; else null
         "dog": "boolean|null",
         "cat": "boolean|null",
         "bird": "boolean|null",
@@ -36,20 +36,21 @@ def build_profile_prompt() -> str:
         "reptile": "boolean|null"
       },
       "zodiac_sign": "string|null",
-      "work": "string|null",                   // company or general work descriptor
+      "work": "string|null",                  // company name only (if shown); NOT job title
       "job_title": "string|null",
       "university": "string|null",
-      "education_level": "string|null",
       "religious_beliefs": "string|null",
       "hometown": "string|null",
-      "politics": "string|null",
+      "politics": "string|null",              // one of: "Liberal", "Moderate", "Conservative", "Not political", "Other", "Prefer not to say"; or null if hidden
       "languages_spoken": ["string", ...],
       "dating_intentions": "string|null",
       "relationship_type": "string|null",
-      "drinking": "string|null",
-      "smoking": "string|null",
-      "marijuana": "string|null",
-      "drugs": "string|null",
+
+      // Lifestyle fields MUST be exactly one of: "Yes", "Sometimes", "No"; or null if the info is hidden.
+      "drinking": "Yes|Sometimes|No|null",
+      "smoking": "Yes|Sometimes|No|null",
+      "marijuana": "Yes|Sometimes|No|null",
+      "drugs": "Yes|Sometimes|No|null",
 
       "bio": "string|null",
       "prompts_and_answers": [
@@ -60,10 +61,13 @@ def build_profile_prompt() -> str:
     }
 
     Guidance:
-    - Use all images collectively to infer details (name, age, bio, prompts/answers, chips/labels).
-    - Prefer explicit text on screenshots over inference; if not explicit, leave null.
-    - Normalize short textual values where possible (e.g., "Socially" for drinking).
-    - Keep JSON valid and concise, no additional commentary outside the JSON.
+    - REQUIRED KEYS: name, age, height, location MUST be present at top-level; set to null if not visible.
+    - All other fields are optional and may be null if not visible.
+    - Use only explicit on-screen text/chips/labels; if uncertain, set the field to null.
+    - For lifestyle fields, do not assume: if not shown, set null; otherwise map to exactly "Yes", "Sometimes", or "No".
+    - For family_plans and politics, restrict to the enumerations above; if not shown, set null.
+    - "work" is the company name only if explicitly shown; if absent, set null (do not reuse job_title).
+    - Output ONLY a valid JSON object with no commentary, preamble, markdown, or code fences.
     """
 
 

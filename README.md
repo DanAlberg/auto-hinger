@@ -48,6 +48,14 @@ Quick Start (PowerShell)
   Set-Location ".\auto-hinger\app"
   uv run python .\main_agent.py --profiles 1 --verbose --confirm-steps
 
+- Scrape-only (no likes/dislikes; collect screenshots + extract only):
+  Set-Location ".\auto-hinger\app"
+  uv run python .\main_agent.py --profiles 1 --scrape-only
+
+- Dry-run (exercise full flow but skip LIKE/SEND taps):
+  Set-Location ".\auto-hinger\app"
+  uv run python .\main_agent.py --profiles 1 --dry-run
+
 - Standard run (default config, saves screenshots to app/images/):
   Set-Location ".\auto-hinger\app"
   uv run python .\main_agent.py
@@ -62,12 +70,17 @@ Command Line Options
 - --like-mode {priority,normal}: Prefer the send button variant (default: priority)
 - --no-excel, --no-xlsx: Disable Excel workbook logging (not recommended)
 - --ai-routing: Use AI to route actions instead of the default deterministic safeguards (off by default)
+- --dry-run: Run full logic but skip LIKE/SEND taps (no actions sent).
+- --scrape-only: Scrape-only mode; no like/dislike actions (data collection only).
 
 Behavior and Defaults
 - Default action is like-with-comment. Like-only is a fallback if typing/sending fails or the comment UI doesn’t appear.
 - Priority send is preferred by default; normal send is used if priority is unavailable.
 - Startup pre-check: The tool will verify that it starts at the top of the profile feed (Like visible). If not, it exits with a clear message. Navigate to the feed top and re-run.
 - Manual confirm before send: enabled by default to allow a final check before tapping Send. You will be prompted in the terminal.
+- Flags quick guide:
+  • --scrape-only → scrape profiles only; no likes/dislikes.
+  • --dry-run → run full flow, but do not tap LIKE/SEND.
 
 Exports and Where to Find Them
 - Excel workbook: profiles.xlsx at repo root (auto-hinger/profiles.xlsx)

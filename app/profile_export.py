@@ -15,7 +15,7 @@ DEFAULT_SCHEMA: List[str] = [
     "location",
     "profession",
     "education",
-    # Lifestyle / attributes
+    # Lifestyle / attributes (legacy + tri-state mapped)
     "drinks",
     "smokes",
     "cannabis",
@@ -47,6 +47,31 @@ DEFAULT_SCHEMA: List[str] = [
     # Trace
     "screenshot_path",
     "errors_encountered",
+
+    # ==== New extraction fields (optional; may be blank frequently) ====
+    "sexuality",
+    "ethnicity",
+    "current_children",
+    "family_plans",
+    "covid_vaccine",
+    "pets_dog",
+    "pets_cat",
+    "pets_bird",
+    "pets_fish",
+    "pets_reptile",
+    "zodiac_sign",
+    "work",
+    "job_title",
+    "university",
+    "religious_beliefs",
+    "hometown",
+    "languages_spoken",
+    "dating_intentions",
+    "relationship_type",
+    "bio",
+    "prompts_and_answers",
+    "summary",
+    "extraction_failed",
 ]
 
 
@@ -81,7 +106,7 @@ class ProfileExporter:
             self._seed_last_signature_from_xlsx()
 
     def _ensure_xlsx_header(self) -> None:
-        """Ensure profiles.xlsx exists and has header row."""
+        """Ensure profiles.xlsx exists and has header row; upgrade header if schema changed."""
         try:
             if not os.path.exists(self.persistent_xlsx_path):
                 wb = Workbook()
@@ -93,10 +118,22 @@ class ProfileExporter:
             else:
                 wb = load_workbook(self.persistent_xlsx_path)
                 ws = wb.active
-                # If workbook exists but has no rows, add header
                 if ws.max_row == 0:
+                    # Empty sheet, write header
                     ws.append(self.schema)
                     wb.save(self.persistent_xlsx_path)
+                else:
+                    # Upgrade header if schema changed (length or any name mismatch)
+                    header_cells = next(ws.iter_rows(min_row=1, max_row=1, values_only=False))
+                    current_header = [cell.value if cell.value is not None else "" for cell in header_cells]
+                    needs_upgrade = (
+                        len(current_header) != len(self.schema) or
+                        any((i >= len(current_header) or (current_header[i] or "") != self.schema[i]) for i in range(len(self.schema)))
+                    )
+                    if needs_upgrade:
+                        for i, name in enumerate(self.schema, start=1):
+                            ws.cell(row=1, column=i).value = name
+                        wb.save(self.persistent_xlsx_path)
                 wb.close()
         except Exception as e:
             print(f"Warning: Failed to initialize XLSX: {e}")

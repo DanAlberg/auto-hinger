@@ -48,6 +48,7 @@ class AgentConfig:
     # Scroll settings
     max_scroll_attempts: int = 3
     scroll_distance_factor: float = 0.3  # how far to scroll
+    vertical_swipe_x_pct: float = 0.12   # use leftmost ~12% of screen for all vertical swipes (poll-safe)
     
     # Horizontal content scraping
     max_horizontal_swipes: int = 8
@@ -63,6 +64,17 @@ class AgentConfig:
     carousel_y_roi_top: float = 0.15             # top of ROI for edge-based Y inference
     carousel_y_roi_bottom: float = 0.60          # bottom of ROI for edge-based Y inference
     carousel_y_smooth_kernel: int = 21           # smoothing kernel for row-strength profiling
+
+    # Carousel vertical seek scanning options
+    max_carousel_y_scans: int = 2                               # max small peek scrolls when age row not visible
+    carousel_scan_step: tuple = (0.72, 0.48)                    # peek swipe: start_y_pct -> end_y_pct
+    carousel_restore_after_seek: bool = True                    # restore viewport after successful seek
+    carousel_detection_roi_stages: tuple = (                    # progressive ROIs for detection
+        (0.0, 0.55),
+        (0.0, 0.75),
+        (0.0, 0.90),
+    )
+    carousel_detection_threshold_decay: float = 0.05            # lower template threshold per stage
 
     # Image dedup/stabilization (aHash) & paging
     image_hash_size: int = 8                     # aHash size (NxN); 8 -> 64-bit
@@ -92,6 +104,12 @@ class AgentConfig:
     # AI tracing
     ai_trace: bool = False
     ai_trace_log_dir: str = "logs"
+
+    # Extraction models (LLM)
+    extraction_model: str = "gpt-5"       # default to gpt-5 (vision-capable)
+    extraction_small_model: str = "gpt-5-mini"  # for small/logical tasks
+    extraction_retry: int = 1
+
     # Testing and typing verification
     dry_run: bool = False  # when True, never send likes/comments (skips Send taps)
     verify_typed_text: bool = False  # optional OCR sanity check after typing (off by default)

@@ -1,10 +1,5 @@
 # app/langgraph_hinge_agent.py
 
-"""
-LangGraph-powered Hinge automation agent that replaces GeminiAgentController.
-Uses state-based workflow management for improved reliability and debugging.
-"""
-
 import json
 import time
 import uuid
@@ -814,48 +809,29 @@ class LangGraphHingeAgent:
             all_screenshots.append(start_shot)
             
             # Full vertical settle scroll (~3/4 screen) to reduce lazy-load jitter without overshooting
-            x = int(width * 0.5)
+            sx = int(width * float(getattr(self.config, "vertical_swipe_x_pct", 0.12)))
             y1 = int(height * 0.75)
             y2 = int(height * 0.35)
-            swipe(device, x, y1, x, y2, duration=700)
+            swipe(device, sx, y1, sx, y2, duration=700)
             time.sleep(2)
             post_full_scroll = capture_screenshot(device, f"profile_{state['current_profile_index']}_post_full_scroll")
             all_screenshots.append(post_full_scroll)
             
-            # Detect age icon Y for horizontal carousel (multi-scale, ROI, optional edges)
-            cfg = self.config
-            age_cv = detect_age_icon_cv_multi(
-                post_full_scroll,
-                template_path="assets/age_icon.png",
-                roi_top=getattr(cfg, "age_icon_roi", (0.0, 0.55))[0],
-                roi_bottom=getattr(cfg, "age_icon_roi", (0.0, 0.55))[1],
-                scales=None,  # internal defaults or computed list
-                threshold=getattr(cfg, "age_icon_threshold", 0.55),
-                use_edges=getattr(cfg, "age_icon_use_edges", True),
-                save_debug=True
-            )
-            if age_cv.get("found"):
-                y_horizontal = int(age_cv["y"])
-                print(f"✅ Age icon Y detected at {y_horizontal}")
+            # Detect age icon Y for horizontal carousel with adaptive peek-scan
+            seek = self._find_carousel_y_with_vertical_scan(state, start_image=post_full_scroll)
+            if seek.get("found"):
+                y_horizontal = int(seek["y"])
+                pages = seek.get("pages_scanned", 0)
+                method = seek.get("method", "unknown")
+                print(f"✅ Carousel Y determined at {y_horizontal} (method={method}, peek_pages={pages})")
             else:
-                # Fallback: infer carousel Y by vertical edge profile in upper half of screen
-                infer = infer_carousel_y_by_edges(
-                    post_full_scroll,
-                    roi_top=getattr(cfg, "carousel_y_roi_top", 0.15),
-                    roi_bottom=getattr(cfg, "carousel_y_roi_bottom", 0.60),
-                    smooth_kernel=getattr(cfg, "carousel_y_smooth_kernel", 21)
-                )
-                if infer.get("found"):
-                    y_horizontal = int(infer["y"])
-                    print(f"✅ Inferred carousel Y via edges at {y_horizontal}")
-                else:
-                    print("❌ Could not determine horizontal carousel Y (age icon not found; edge inference failed).")
-                    return {
-                        **state,
-                        "last_action": "analyze_profile",
-                        "action_successful": False,
-                        "errors_encountered": state.get("errors_encountered", 0) + 1
-                    }
+                print("❌ Could not determine horizontal carousel Y after adaptive seek.")
+                return {
+                    **state,
+                    "last_action": "analyze_profile",
+                    "action_successful": False,
+                    "errors_encountered": state.get("errors_encountered", 0) + 1
+                }
             
             # Horizontal swipe collection until stable (image-dedup)
             hshots, _ = self._collect_horizontal_content(state, y_horizontal)
@@ -868,11 +844,28 @@ class LangGraphHingeAgent:
             # Analyze once with all unique screenshots (no interim AI calls)
             combined_text = ""
             print(f"🖼️ Unique screenshots collected: {len(all_screenshots)}")
-            # Build (but do not submit) a reusable batch payload for future LLM extraction
+            # Build and SUBMIT reusable batch payload for LLM extraction (OpenAI format)
+            extracted_profile: Dict[str, Any] = {}
+            extraction_failed = False
             try:
                 llm_payload = build_llm_batch_payload(all_screenshots, prompt=build_profile_prompt())
-            except Exception:
+                images_count = llm_payload.get("meta", {}).get("images_count", len(all_screenshots))
+                print(f"📦 LLM batch images: {images_count}")
+                # Submit to LLM (uses gpt-5 by default; gpt-5-mini for small logical calls if needed)
+                extracted_raw = self._submit_llm_batch_request(llm_payload)
+                # Validate required top-level keys presence (values may be null)
+                missing_after = self._validate_required_fields(extracted_raw)
+                if missing_after:
+                    print(f"⚠️ Extraction missing required keys after retry: {', '.join(missing_after)}")
+                    extraction_failed = True
+                # Normalize to stable schema with nulls/[] defaults; tri-state lifestyle fields
+                extracted_profile = self._normalize_extracted_profile(extracted_raw)
+            except Exception as _e:
+                print(f"❌ Extraction exception: {_e}")
                 llm_payload = {}
+                extraction_failed = True
+
+            # Keep comprehensive scoring path for current decision logic
             comprehensive = self._analyze_complete_profile(all_screenshots, combined_text)
             current_screenshot = all_screenshots[-1] if all_screenshots else state['current_screenshot']
             
@@ -884,6 +877,8 @@ class LangGraphHingeAgent:
                 "current_screenshot": current_screenshot,
                 "profile_text": combined_text,
                 "profile_analysis": comprehensive,
+                "extracted_profile": extracted_profile,
+                "extraction_failed": extraction_failed,
                 "llm_batch_request": llm_payload,
                 "last_action": "analyze_profile",
                 "action_successful": True
@@ -897,6 +892,90 @@ class LangGraphHingeAgent:
                 "errors_encountered": state.get("errors_encountered", 0) + 1
             }
     
+    def _find_carousel_y_with_vertical_scan(self, state: HingeAgentState, start_image: str) -> Dict[str, Any]:
+        """
+        Try to locate the age/name marker Y with progressive ROI stages on the current frame.
+        If not found, perform up to N small peek scrolls, re-checking after each.
+        Optionally restore the viewport after success.
+        Returns: {"found": bool, "y": int, "pages_scanned": int, "method": "template|edges|not_found"}
+        """
+        device = state["device"]
+        width = state["width"]
+        height = state["height"]
+        cfg = self.config
+
+        def try_detect_in_stages(img_path: str) -> Dict[str, Any]:
+            base_thr = float(getattr(cfg, "age_icon_threshold", 0.55))
+            decay = float(getattr(cfg, "carousel_detection_threshold_decay", 0.05))
+            stages = list(getattr(cfg, "carousel_detection_roi_stages", ((0.0, 0.55), (0.0, 0.75), (0.0, 0.90))))
+            # Stage through ROI windows with threshold decay; template first, then edges
+            for idx, (top, bottom) in enumerate(stages):
+                thr = max(0.2, base_thr - decay * idx)
+                # Template+edges
+                tpl = detect_age_icon_cv_multi(
+                    img_path,
+                    template_path="assets/age_icon.png",
+                    roi_top=float(top),
+                    roi_bottom=float(bottom),
+                    scales=None,
+                    threshold=thr,
+                    use_edges=bool(getattr(cfg, "age_icon_use_edges", True)),
+                    save_debug=True
+                )
+                if tpl.get("found"):
+                    return {"found": True, "y": int(tpl["y"]), "method": f"template(stage={idx},thr={thr:.2f})"}
+                # Edges fallback (row-strength)
+                edge = infer_carousel_y_by_edges(
+                    img_path,
+                    roi_top=float(getattr(cfg, "carousel_y_roi_top", top)),
+                    roi_bottom=float(getattr(cfg, "carousel_y_roi_bottom", bottom)),
+                    smooth_kernel=int(getattr(cfg, "carousel_y_smooth_kernel", 21))
+                )
+                if edge.get("found"):
+                    return {"found": True, "y": int(edge["y"]), "method": f"edges(stage={idx})"}
+            return {"found": False}
+
+        # 1) Try detection on the starting image
+        res = try_detect_in_stages(start_image)
+        if res.get("found"):
+            res["pages_scanned"] = 0
+            return res
+
+        # 2) Peek-scan up to max_carousel_y_scans times
+        max_scans = int(getattr(cfg, "max_carousel_y_scans", 2))
+        step = getattr(cfg, "carousel_scan_step", (0.72, 0.48))
+        sx = int(width * float(getattr(cfg, "vertical_swipe_x_pct", 0.12)))
+        sy1 = int(height * float(step[0]))
+        sy2 = int(height * float(step[1]))
+        hash_size = int(getattr(cfg, "image_hash_size", 8))
+        hash_thresh = int(getattr(cfg, "image_hash_threshold", 5))
+
+        pages = 0
+        last_kept = start_image
+        for i in range(max_scans):
+            swipe(device, sx, sy1, sx, sy2, duration=600)
+            time.sleep(1.6)
+            shot = capture_screenshot(device, f"carousel_seek_{state['current_profile_index']}_{i+1}")
+            if last_kept and are_images_similar(shot, last_kept, hash_size=hash_size, threshold=hash_thresh):
+                # Nothing new; avoid looping
+                break
+            last_kept = shot
+            pages += 1
+            res = try_detect_in_stages(shot)
+            if res.get("found"):
+                # Optional restore
+                if bool(getattr(cfg, "carousel_restore_after_seek", True)) and pages > 0:
+                    # Reverse scroll roughly back
+                    r_sy1 = int(height * 0.40)
+                    r_sy2 = int(height * 0.68)
+                    for _ in range(pages):
+                        swipe(device, sx, r_sy1, sx, r_sy2, duration=600)
+                        time.sleep(0.8)
+                res["pages_scanned"] = pages
+                return res
+
+        return {"found": False, "pages_scanned": pages, "method": "not_found"}
+
     def _collect_horizontal_content(self, state: HingeAgentState, y_coord: int) -> tuple[list, list]:
         """Swipe horizontally across the photo carousel, capturing until frames stabilize (aHash); no interim AI calls."""
         cfg = self.config
@@ -951,7 +1030,7 @@ class LangGraphHingeAgent:
         
         for i in range(1, max_pages + 1):
             print(f"📜 Vertical page {i}/{max_pages}")
-            sx = int(width * 0.5)
+            sx = int(width * float(getattr(self.config, "vertical_swipe_x_pct", 0.12)))
             sy1 = int(height * 0.80)
             sy2 = int(height * 0.20)
             swipe(device, sx, sy1, sx, sy2, duration=600)
@@ -1054,6 +1133,239 @@ class LangGraphHingeAgent:
                 "content_quality": "unknown"
             }
     
+    # ===== Batched LLM extraction helpers =====
+
+    def _submit_llm_batch_request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Submit the built OpenAI-compatible payload to the model:
+        - Prepend a system message to enforce strict JSON with required keys.
+        - Use gpt-5 by default; reserve gpt-5-mini for small/logical tasks.
+        - Retry once with stricter instructions on parse/validation failure.
+        """
+        messages = payload.get("messages", []) or []
+        if not isinstance(messages, list):
+            return {}
+
+        # Base system prompt enforces strict JSON and required keys (values may be null)
+        system_msg = {
+            "role": "system",
+            "content": (
+                "Return ONLY a strict, valid JSON object for the requested schema. "
+                "Top-level keys MUST include: name, age, height, location (values may be null). "
+                "All other fields are optional. No commentary, preamble, markdown, or code fences."
+            ),
+        }
+        strict_retry_msg = {
+            "role": "system",
+            "content": (
+                "STRICT MODE: Respond with a single JSON object only. No text outside JSON. "
+                "Do not include code fences. Ensure keys name, age, height, location exist."
+            ),
+        }
+
+        model = getattr(self.config, "extraction_model", "gpt-5") or "gpt-5"
+        # First attempt
+        def _call(msgs):
+            resp = self.ai_client.chat.completions.create(
+                model=model,
+                response_format={"type": "json_object"},
+                messages=msgs,
+                temperature=0.0,
+            )
+            return json.loads(resp.choices[0].message.content or "{}")
+
+        try:
+            attempt_msgs = [system_msg] + messages
+            result = _call(attempt_msgs)
+            # Validate required keys
+            missing = self._validate_required_fields(result)
+            if not missing:
+                return result
+            # Retry if missing required keys
+            retry_msgs = [strict_retry_msg] + attempt_msgs
+            retry_result = _call(retry_msgs)
+            return retry_result
+        except Exception as e1:
+            try:
+                retry_msgs = [strict_retry_msg] + ([system_msg] + messages)
+                retry_result = _call(retry_msgs)
+                return retry_result
+            except Exception as e2:
+                print(f"❌ Extraction failed after retry: {e2}")
+                return {}
+
+    def _validate_required_fields(self, obj: Any) -> list:
+        """
+        Ensure required top-level keys exist (values may be None).
+        Returns the list of missing required keys.
+        """
+        required = ["name", "age", "height", "location"]
+        if not isinstance(obj, dict):
+            return required
+        missing = [k for k in required if k not in obj]
+        return missing
+
+    def _to_bool_or_none(self, v: Any) -> Optional[bool]:
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            if v == 1:
+                return True
+            if v == 0:
+                return False
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("true", "yes", "y", "has", "present", "1"):
+                return True
+            if s in ("false", "no", "n", "none", "absent", "0"):
+                return False
+        return None
+
+    def _tri_state(self, v: Any) -> Optional[str]:
+        """
+        Map free-form lifestyle strings to one of: "Yes", "Sometimes", "No".
+        If not explicitly indicated on-screen, return None (hidden).
+        """
+        if v is None:
+            return None
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("yes", "y", "yeah", "yep", "daily", "often", "regularly", "frequently", "heavy", "smoker", "drinker", "uses"):
+                return "Yes"
+            if s in ("no", "n", "never", "doesn't", "does not", "none", "sober", "non-smoker", "nope"):
+                return "No"
+            if s in ("sometimes", "socially", "occasionally", "rarely", "light", "moderate"):
+                return "Sometimes"
+        return None
+
+    def _normalize_extracted_profile(self, raw: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normalize raw extraction into a stable shape with nulls/[] defaults.
+        Enforce tri-state on lifestyle fields: yes/sometimes/no.
+        """
+        out = {
+            "sexuality": None,
+            "name": None,
+            "age": None,
+            "height": None,
+            "location": None,
+            "ethnicity": None,
+            "current_children": None,
+            "family_plans": None,
+            "covid_vaccine": None,
+            "pets": {"dog": None, "cat": None, "bird": None, "fish": None, "reptile": None},
+            "zodiac_sign": None,
+            "work": None,
+            "job_title": None,
+            "university": None,
+            "education_level": None,
+            "religious_beliefs": None,
+            "hometown": None,
+            "politics": None,
+            "languages_spoken": [],
+            "dating_intentions": None,
+            "relationship_type": None,
+            "drinking": None,
+            "smoking": None,
+            "marijuana": None,
+            "drugs": None,
+            "bio": None,
+            "prompts_and_answers": [],
+            "interests": [],
+            "summary": "",
+        }
+        if not isinstance(raw, dict):
+            return out
+
+        # Copy simple fields if present
+        for k in ["sexuality", "name", "height", "location", "ethnicity", "current_children",
+                  "family_plans", "covid_vaccine", "zodiac_sign", "work", "job_title",
+                  "university", "religious_beliefs", "hometown",
+                  "politics", "dating_intentions", "relationship_type", "bio", "summary"]:
+            if k in raw:
+                out[k] = raw.get(k)
+
+        # Normalize enumerations with strict sets (family_plans, politics)
+        fam = raw.get("family_plans")
+        if isinstance(fam, str):
+            fs = fam.strip().lower()
+            if fs in ("don't want children", "do not want children", "dont want children"):
+                out["family_plans"] = "Don't want children"
+            elif fs == "want children":
+                out["family_plans"] = "Want children"
+            elif fs == "open to children":
+                out["family_plans"] = "Open to children"
+            elif fs == "not sure yet":
+                out["family_plans"] = "Not sure yet"
+            elif fs == "prefer not to say":
+                out["family_plans"] = "Prefer not to say"
+            else:
+                out["family_plans"] = None
+
+        pol = raw.get("politics")
+        if isinstance(pol, str):
+            ps = pol.strip().lower()
+            if ps == "liberal":
+                out["politics"] = "Liberal"
+            elif ps == "moderate":
+                out["politics"] = "Moderate"
+            elif ps == "conservative":
+                out["politics"] = "Conservative"
+            elif ps == "not political":
+                out["politics"] = "Not political"
+            elif ps == "other":
+                out["politics"] = "Other"
+            elif ps == "prefer not to say":
+                out["politics"] = "Prefer not to say"
+            else:
+                out["politics"] = None
+
+        # Age coercion
+        age_val = raw.get("age")
+        if isinstance(age_val, (int, float)):
+            out["age"] = int(age_val)
+        elif isinstance(age_val, str):
+            try:
+                out["age"] = int(float(age_val.strip()))
+            except Exception:
+                out["age"] = None
+
+        # Languages
+        langs = raw.get("languages_spoken", [])
+        if isinstance(langs, list):
+            out["languages_spoken"] = [str(x).strip() for x in langs if x is not None]
+
+        # Interests
+        ints = raw.get("interests", [])
+        if isinstance(ints, list):
+            out["interests"] = [str(x).strip() for x in ints if x is not None]
+
+        # Prompts and answers
+        paa = raw.get("prompts_and_answers", [])
+        if isinstance(paa, list):
+            clean_pa = []
+            for item in paa:
+                if isinstance(item, dict):
+                    clean_pa.append({
+                        "prompt": (item.get("prompt") or "").strip(),
+                        "answer": (item.get("answer") or "").strip(),
+                    })
+            out["prompts_and_answers"] = clean_pa
+
+        # Pets
+        pets = raw.get("pets", {})
+        if isinstance(pets, dict):
+            for p in ["dog", "cat", "bird", "fish", "reptile"]:
+                out["pets"][p] = self._to_bool_or_none(pets.get(p))
+
+        # Lifestyle tri-state
+        out["drinking"] = self._tri_state(raw.get("drinking"))
+        out["smoking"] = self._tri_state(raw.get("smoking"))
+        out["marijuana"] = self._tri_state(raw.get("marijuana"))
+        out["drugs"] = self._tri_state(raw.get("drugs"))
+
+        return out
+
     @gated_step
     def scroll_profile_node(self, state: HingeAgentState) -> HingeAgentState:
         """Scroll to see more profile content"""
@@ -1071,7 +1383,7 @@ class LangGraphHingeAgent:
             }
         
         # Perform scroll
-        scroll_x = int(scroll_analysis.get('scroll_area_center_x', 0.5) * state["width"])
+        scroll_x = int(getattr(self.config, "vertical_swipe_x_pct", 0.12) * state["width"])
         scroll_y_start = int(scroll_analysis.get('scroll_area_center_y', 0.6) * state["height"])
         scroll_y_end = int(scroll_y_start * 0.3)
         
@@ -1960,9 +2272,9 @@ class LangGraphHingeAgent:
             # Aggressive horizontal swipe
             (int(state["width"] * 0.9), int(state["height"] * 0.5), 
              int(state["width"] * 0.1), int(state["height"] * 0.5)),
-            # Vertical swipe down
-            (int(state["width"] * 0.5), int(state["height"] * 0.3), 
-             int(state["width"] * 0.5), int(state["height"] * 0.7)),
+            # Vertical swipe down (poll-safe on left)
+            (int(state["width"] * getattr(self.config, "vertical_swipe_x_pct", 0.12)), int(state["height"] * 0.3), 
+             int(state["width"] * getattr(self.config, "vertical_swipe_x_pct", 0.12)), int(state["height"] * 0.7)),
             # Diagonal swipe
             (int(state["width"] * 0.8), int(state["height"] * 0.3), 
              int(state["width"] * 0.2), int(state["height"] * 0.7)),
@@ -2036,9 +2348,15 @@ class LangGraphHingeAgent:
         try:
             if not getattr(self, "exporter", None):
                 return
+
+            # Primary sources
             analysis = state.get("profile_analysis", {}) or {}
-            def _get(key, default=""):
+            extracted = state.get("extracted_profile", {}) or {}
+
+            # Helpers
+            def _get_ana(key, default=""):
                 return analysis.get(key, default)
+
             def _join_list(val):
                 if isinstance(val, list):
                     try:
@@ -2046,45 +2364,97 @@ class LangGraphHingeAgent:
                     except Exception:
                         return ""
                 return str(val) if val is not None else ""
+
+            # Prepare derived strings from extracted profile
+            languages_spoken = ", ".join([str(x) for x in extracted.get("languages_spoken", []) if x])
+            interests = ", ".join([str(x) for x in extracted.get("interests", []) if x])
+            prompts = " | ".join([
+                f"{(pa.get('prompt') or '').strip()}: {(pa.get('answer') or '').strip()}"
+                for pa in (extracted.get("prompts_and_answers", []) or [])
+                if isinstance(pa, dict)
+            ])
+            pets = extracted.get("pets", {}) or {}
+
+            # Comment trace
             comment_text = state.get("generated_comment", "") or ""
             comment_hash = hashlib.sha256(comment_text.encode("utf-8")).hexdigest()[:16] if comment_text else ""
+
+            # Build base row with legacy analysis values
             row = {
                 "session_id": getattr(self, "session_id", ""),
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
                 "profile_index": state.get("current_profile_index", 0),
-                "name": _get("name", ""),
-                "estimated_age": _get("estimated_age", ""),
-                "location": _get("location", ""),
-                "profession": _get("profession", ""),
-                "education": _get("education", ""),
-                "drinks": _get("drinks", ""),
-                "smokes": _get("smokes", ""),
-                "cannabis": _get("cannabis", ""),
-                "drugs": _get("drugs", ""),
-                "religion": _get("religion", ""),
-                "politics": _get("politics", ""),
-                "kids": _get("kids", ""),
-                "wants_kids": _get("wants_kids", ""),
-                "height": _get("height", ""),
-                "languages": _join_list(_get("languages", [])),
-                "interests": _join_list(_get("interests", [])),
-                "attribute_chips_raw": _join_list(_get("attribute_chips_raw", [])),
-                "prompts_count": _get("prompt_answers", ""),
+
+                # Identity (backfill from extracted where possible)
+                "name": extracted.get("name") or _get_ana("name", ""),
+                "estimated_age": (extracted.get("age") if extracted.get("age") is not None else _get_ana("estimated_age", "")),
+                "location": extracted.get("location") or _get_ana("location", ""),
+                "profession": _get_ana("profession", "") or extracted.get("job_title") or extracted.get("work") or "",
+                "education": _get_ana("education", "") or extracted.get("university") or "",
+
+                # Lifestyle / attributes (use tri-state in existing columns)
+                "drinks": extracted.get("drinking") or _get_ana("drinks", ""),
+                "smokes": extracted.get("smoking") or _get_ana("smokes", ""),
+                "cannabis": extracted.get("marijuana") or _get_ana("cannabis", ""),
+                "drugs": extracted.get("drugs") or _get_ana("drugs", ""),
+                "religion": extracted.get("religious_beliefs") or _get_ana("religion", ""),
+                "politics": extracted.get("politics") or _get_ana("politics", ""),
+                "kids": _get_ana("kids", ""),
+                "wants_kids": _get_ana("wants_kids", ""),
+                "height": extracted.get("height") or _get_ana("height", ""),
+                "languages": _get_ana("languages", "") or languages_spoken,
+                "interests": interests or _join_list(_get_ana("interests", [])),
+                "attribute_chips_raw": _join_list(_get_ana("attribute_chips_raw", [])),
+
+                # Content metrics and analyzer scores
+                "prompts_count": _get_ana("prompt_answers", ""),
                 "extracted_text_length": len(state.get("profile_text", "") or ""),
-                "content_depth": _get("content_depth", ""),
-                "completeness": _get("profile_completeness", ""),
-                "profile_quality_score": _get("profile_quality_score", ""),
-                "conversation_potential": _get("conversation_potential", ""),
+                "content_depth": _get_ana("content_depth", ""),
+                "completeness": _get_ana("profile_completeness", ""),
+                "profile_quality_score": _get_ana("profile_quality_score", ""),
+                "conversation_potential": _get_ana("conversation_potential", ""),
                 "should_like": analysis.get("should_like", ""),
                 "policy_reason": state.get("decision_reason", ""),
+
+                # Action details
                 "like_mode": getattr(self.config, "like_mode", "priority"),
                 "sent_like": 1,
                 "sent_comment": 1 if sent_comment else 0,
                 "comment_id": state.get("comment_id", ""),
                 "comment_hash": comment_hash,
+
+                # Trace
                 "screenshot_path": screenshot_path or "",
                 "errors_encountered": state.get("errors_encountered", 0),
             }
+
+            # New optional columns (will be written only if present in schema)
+            row.update({
+                "sexuality": extracted.get("sexuality"),
+                "ethnicity": extracted.get("ethnicity"),
+                "current_children": extracted.get("current_children"),
+                "family_plans": extracted.get("family_plans"),
+                "covid_vaccine": extracted.get("covid_vaccine"),
+                "pets_dog": 1 if pets.get("dog") is True else 0 if pets.get("dog") is False else "",
+                "pets_cat": 1 if pets.get("cat") is True else 0 if pets.get("cat") is False else "",
+                "pets_bird": 1 if pets.get("bird") is True else 0 if pets.get("bird") is False else "",
+                "pets_fish": 1 if pets.get("fish") is True else 0 if pets.get("fish") is False else "",
+                "pets_reptile": 1 if pets.get("reptile") is True else 0 if pets.get("reptile") is False else "",
+                "zodiac_sign": extracted.get("zodiac_sign"),
+                "work": extracted.get("work"),
+                "job_title": extracted.get("job_title"),
+                "university": extracted.get("university"),
+                "religious_beliefs": extracted.get("religious_beliefs"),
+                "hometown": extracted.get("hometown"),
+                "languages_spoken": languages_spoken,  # keep legacy 'languages' too
+                "dating_intentions": extracted.get("dating_intentions"),
+                "relationship_type": extracted.get("relationship_type"),
+                "bio": extracted.get("bio"),
+                "prompts_and_answers": prompts,
+                "summary": extracted.get("summary") or "",
+                "extraction_failed": 1 if state.get("extraction_failed") else 0,
+            })
+
             self.exporter.append_row(row)
         except Exception as e:
             print(f"⚠️  Export row failed: {e}")
