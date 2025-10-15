@@ -49,6 +49,9 @@ class AgentConfig:
     max_scroll_attempts: int = 3
     scroll_distance_factor: float = 0.3  # how far to scroll
     vertical_swipe_x_pct: float = 0.12   # use leftmost ~12% of screen for all vertical swipes (poll-safe)
+    vertical_swipe_duration_ms: int = 1200   # increase duration so Android classifies as scroll, not tap
+    vertical_swipe_x_jitter_px: int = 3      # tiny horizontal jitter to avoid stationary-tap interpretation
+    vertical_swipe_bottom_guard_pct: float = 0.90  # never place swipe endpoints below bottom 10% (avoid X button)
     
     # Horizontal content scraping
     max_horizontal_swipes: int = 8

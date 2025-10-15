@@ -812,7 +812,7 @@ class LangGraphHingeAgent:
             sx = int(width * float(getattr(self.config, "vertical_swipe_x_pct", 0.12)))
             y1 = int(height * 0.75)
             y2 = int(height * 0.35)
-            swipe(device, sx, y1, sx, y2, duration=700)
+            self._vertical_swipe_px(state, sx, y1, y2, duration_ms=int(getattr(self.config, "vertical_swipe_duration_ms", 1200)))
             time.sleep(2)
             post_full_scroll = capture_screenshot(device, f"profile_{state['current_profile_index']}_post_full_scroll")
             all_screenshots.append(post_full_scroll)
@@ -909,6 +909,7 @@ class LangGraphHingeAgent:
             decay = float(getattr(cfg, "carousel_detection_threshold_decay", 0.05))
             stages = list(getattr(cfg, "carousel_detection_roi_stages", ((0.0, 0.55), (0.0, 0.75), (0.0, 0.90))))
             # Stage through ROI windows with threshold decay; template first, then edges
+            print(f"AGE_DETECT_PARAMS base_thr={base_thr:.2f} decay={decay:.2f} stages={stages} use_edges={bool(getattr(cfg, 'age_icon_use_edges', True))} smooth_kernel={int(getattr(cfg, 'carousel_y_smooth_kernel', 21))}")
             for idx, (top, bottom) in enumerate(stages):
                 thr = max(0.2, base_thr - decay * idx)
                 # Template+edges
@@ -923,6 +924,7 @@ class LangGraphHingeAgent:
                     save_debug=True
                 )
                 if tpl.get("found"):
+                    print(f"AGE_DETECT_STAGE_RESULT idx={idx} method=template y={int(tpl['y'])}")
                     return {"found": True, "y": int(tpl["y"]), "method": f"template(stage={idx},thr={thr:.2f})"}
                 # Edges fallback (row-strength)
                 edge = infer_carousel_y_by_edges(
@@ -932,7 +934,9 @@ class LangGraphHingeAgent:
                     smooth_kernel=int(getattr(cfg, "carousel_y_smooth_kernel", 21))
                 )
                 if edge.get("found"):
+                    print(f"AGE_DETECT_STAGE_RESULT idx={idx} method=edges y={int(edge['y'])}")
                     return {"found": True, "y": int(edge["y"]), "method": f"edges(stage={idx})"}
+                print(f"AGE_DETECT_STAGE_RESULT idx={idx} method=none found=False")
             return {"found": False}
 
         # 1) Try detection on the starting image
@@ -953,7 +957,7 @@ class LangGraphHingeAgent:
         pages = 0
         last_kept = start_image
         for i in range(max_scans):
-            swipe(device, sx, sy1, sx, sy2, duration=600)
+            self._vertical_swipe_px(state, sx, sy1, sy2, duration_ms=int(getattr(cfg, "vertical_swipe_duration_ms", 1200)))
             time.sleep(1.6)
             shot = capture_screenshot(device, f"carousel_seek_{state['current_profile_index']}_{i+1}")
             if last_kept and are_images_similar(shot, last_kept, hash_size=hash_size, threshold=hash_thresh):
@@ -969,12 +973,31 @@ class LangGraphHingeAgent:
                     r_sy1 = int(height * 0.40)
                     r_sy2 = int(height * 0.68)
                     for _ in range(pages):
-                        swipe(device, sx, r_sy1, sx, r_sy2, duration=600)
+                        self._vertical_swipe_px(state, sx, r_sy1, r_sy2, duration_ms=int(getattr(cfg, "vertical_swipe_duration_ms", 1200)))
                         time.sleep(0.8)
                 res["pages_scanned"] = pages
                 return res
 
         return {"found": False, "pages_scanned": pages, "method": "not_found"}
+
+    def _vertical_swipe_px(self, state: HingeAgentState, x: int, y1: int, y2: int, duration_ms: int = 1200) -> None:
+        """Vertical swipe with controlled duration and tiny x jitter to encourage scroll classification (not tap)."""
+        try:
+            jitter = int(getattr(self.config, "vertical_swipe_x_jitter_px", 3))
+            width = state["width"]
+            height = state["height"]
+            guard_bottom = float(getattr(self.config, "vertical_swipe_bottom_guard_pct", 0.90))
+            max_y = max(0, int(height * guard_bottom) - 1)
+            sy1 = min(max(y1, 0), max_y)
+            sy2 = min(max(y2, 0), max_y)
+            # Apply tiny jitter: if swiping up (y1 > y2), nudge x2 right; if down, nudge left
+            x2 = min(max(x + (jitter if sy2 < sy1 else -jitter), 0), width - 1)
+            dur = max(300, int(duration_ms))
+            print(f"SWIPE_VERTICAL x1={x} x2={x2} y1={sy1} y2={sy2} duration={dur}ms")
+            swipe(state["device"], x, sy1, x2, sy2, duration=dur)
+        except Exception as e:
+            print(f"SWIPE_VERTICAL_FAILED: {e}")
+            swipe(state["device"], x, y1, x, y2, duration=max(600, int(duration_ms)))
 
     def _collect_horizontal_content(self, state: HingeAgentState, y_coord: int) -> tuple[list, list]:
         """Swipe horizontally across the photo carousel, capturing until frames stabilize (aHash); no interim AI calls."""
@@ -989,12 +1012,13 @@ class LangGraphHingeAgent:
         hash_size = int(getattr(cfg, "image_hash_size", 8))
         hash_thresh = int(getattr(cfg, "image_hash_threshold", 5))
         
+        print(f"HSWIPE_SETUP x1={x1} x2={x2} y={y_coord} duration=600ms")
         unique_shots: list[str] = []
         stable = 0
         last_kept: str | None = None
         
         for i in range(1, max_swipes + 1):
-            print(f"➡️ Horizontal swipe {i}/{max_swipes} at y={y_coord}")
+            print(f"HSWIPE_DO i={i}/{max_swipes} x1={x1} x2={x2} y={y_coord} duration=600ms")
             swipe(device, x1, y_coord, x2, y_coord, duration=600)
             time.sleep(2)
             shot = capture_screenshot(device, f"profile_{state['current_profile_index']}_hscroll_{i}")
@@ -1008,6 +1032,7 @@ class LangGraphHingeAgent:
                 print(f"🟨 Horizontal duplicate detected ({stable}/{stable_needed})")
             
             if stable >= stable_needed:
+                print(f"HSWIPE_STABLE repeats={stable} needed={stable_needed}")
                 print("✅ Horizontal frames stabilized; stopping horizontal swipes.")
                 break
         
@@ -1033,7 +1058,7 @@ class LangGraphHingeAgent:
             sx = int(width * float(getattr(self.config, "vertical_swipe_x_pct", 0.12)))
             sy1 = int(height * 0.80)
             sy2 = int(height * 0.20)
-            swipe(device, sx, sy1, sx, sy2, duration=600)
+            self._vertical_swipe_px(state, sx, sy1, sy2, duration_ms=int(getattr(self.config, "vertical_swipe_duration_ms", 1200)))
             time.sleep(2)
             shot = capture_screenshot(device, f"profile_{state['current_profile_index']}_vpage_{i}")
             
@@ -1170,7 +1195,6 @@ class LangGraphHingeAgent:
                 model=model,
                 response_format={"type": "json_object"},
                 messages=msgs,
-                temperature=0.0,
             )
             return json.loads(resp.choices[0].message.content or "{}")
 
@@ -1387,7 +1411,7 @@ class LangGraphHingeAgent:
         scroll_y_start = int(scroll_analysis.get('scroll_area_center_y', 0.6) * state["height"])
         scroll_y_end = int(scroll_y_start * 0.3)
         
-        swipe(state["device"], scroll_x, scroll_y_start, scroll_x, scroll_y_end)
+        self._vertical_swipe_px(state, scroll_x, scroll_y_start, scroll_y_end, duration_ms=int(getattr(self.config, "vertical_swipe_duration_ms", 1200)))
         time.sleep(2)
         
         # Capture new content
@@ -2282,7 +2306,13 @@ class LangGraphHingeAgent:
         
         for i, (x1, y1, x2, y2) in enumerate(recovery_attempts):
             print(f"🔄 Recovery attempt {i + 1}: Swipe from ({x1}, {y1}) to ({x2}, {y2})")
-            swipe(state["device"], x1, y1, x2, y2, duration=800)
+            try:
+                if x1 == x2:
+                    self._vertical_swipe_px(state, x1, y1, y2, duration_ms=int(getattr(self.config, "vertical_swipe_duration_ms", 1200)))
+                else:
+                    swipe(state["device"], x1, y1, x2, y2, duration=800)
+            except Exception:
+                swipe(state["device"], x1, y1, x2, y2, duration=800)
             time.sleep(2)
             
             # Check if we're unstuck
