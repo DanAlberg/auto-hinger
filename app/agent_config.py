@@ -49,6 +49,27 @@ class AgentConfig:
     max_scroll_attempts: int = 3
     scroll_distance_factor: float = 0.3  # how far to scroll
     
+    # Horizontal content scraping
+    max_horizontal_swipes: int = 8
+    content_stable_repeats: int = 2
+    horizontal_swipe_dx: tuple = (0.80, 0.20)  # start_x_percent, end_x_percent
+    
+    # Age icon detection & carousel Y inference
+    age_icon_roi: tuple = (0.0, 0.55)            # search age icon within this vertical ROI (top..bottom)
+    age_icon_scales: tuple = (0.6, 1.5, 0.1)     # start, end, step for multi-scale matching
+    age_icon_threshold: float = 0.55             # normalized threshold for match acceptance
+    age_icon_use_edges: bool = True              # use Canny edges during matching
+
+    carousel_y_roi_top: float = 0.15             # top of ROI for edge-based Y inference
+    carousel_y_roi_bottom: float = 0.60          # bottom of ROI for edge-based Y inference
+    carousel_y_smooth_kernel: int = 21           # smoothing kernel for row-strength profiling
+
+    # Image dedup/stabilization (aHash) & paging
+    image_hash_size: int = 8                     # aHash size (NxN); 8 -> 64-bit
+    image_hash_threshold: int = 5                # Hamming distance threshold for "similar"
+    image_stable_repeats: int = 2                # stop after N consecutive duplicates
+    max_vertical_pages: int = 10                 # vertical pages cap before giving up
+    
     # Recovery strategies
     enable_aggressive_navigation: bool = True
     enable_back_button_recovery: bool = True
@@ -78,6 +99,7 @@ class AgentConfig:
     # Deterministic control & export settings
     deterministic_mode: bool = True
     like_mode: str = "priority"  # "priority" or "normal"
+    scrape_only: bool = False
     export_xlsx: bool = True
     export_dir: str = "logs"
     precheck_strict: bool = True
