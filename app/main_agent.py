@@ -61,6 +61,25 @@ def parse_arguments():
         action="store_true",
         help="Trace AI inputs (prompts + image paths) to logs/ai_trace_*.log"
     )
+
+    parser.add_argument(
+        "--like-mode",
+        choices=["priority", "normal"],
+        default="priority",
+        help="Prefer 'send priority like' or 'send like' when both are available (default: priority)"
+    )
+    parser.add_argument(
+        "--ai-routing",
+        dest="ai_routing",
+        action="store_true",
+        help="Use AI to route actions instead of deterministic step runner"
+    )
+    parser.add_argument(
+        "--export-xlsx",
+        dest="export_xlsx",
+        action="store_true",
+        help="Also export an Excel file at the end (requires pandas/openpyxl)"
+    )
     
     return parser.parse_args()
 
@@ -84,6 +103,11 @@ def get_config(config_name: str, args) -> AgentConfig:
     config.manual_confirm = args.manual_confirm
     # Enable AI trace if explicitly requested or when manual confirm mode is on
     config.ai_trace = args.trace_ai or args.manual_confirm
+
+    # New flags
+    config.like_mode = args.like_mode
+    config.deterministic_mode = not args.ai_routing
+    config.export_xlsx = args.export_xlsx
     
     return config
 
@@ -132,6 +156,9 @@ async def main():
         if config.manual_confirm:
             print("Manual confirmation mode ENABLED: each step requires 'y' to proceed and all actions are logged.")
         print(f"📝 AI Trace: {config.ai_trace}")
+        print(f"🏷️ Like Mode: {config.like_mode}")
+        print(f"🧭 Deterministic Mode: {config.deterministic_mode}")
+        print(f"📊 Export XLSX: {config.export_xlsx}")
         print(f"🤖 AI Controller: OpenAI + LangGraph")
         print()
         

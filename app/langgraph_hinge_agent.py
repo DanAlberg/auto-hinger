@@ -28,6 +28,8 @@ from analyzer import (
 )
 from data_store import store_generated_comment, calculate_template_success_rates
 from prompt_engine import update_template_weights
+from profile_export import ProfileExporter
+import hashlib
 
 
 class HingeAgentState(TypedDict):
@@ -156,6 +158,18 @@ class LangGraphHingeAgent:
         # Profile batch processing to avoid LangGraph recursion limits
         self.profiles_per_batch = 3  # Process 3 profiles per batch to stay under 25-turn limit
         self.max_turns_per_profile = 8  # Estimated max turns needed per profile
+
+        # Session/export setup
+        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            self.exporter = ProfileExporter(
+                export_dir=self.config.export_dir,
+                session_id=self.session_id,
+                export_csv=getattr(self.config, "export_csv", True),
+                export_xlsx=getattr(self.config, "export_xlsx", False),
+            )
+        except Exception:
+            self.exporter = None
     
     def _init_manual_logging(self) -> None:
         """Initialize manual confirmation session logging."""
@@ -355,7 +369,31 @@ class LangGraphHingeAgent:
         width, height = get_screen_resolution(device)
         open_hinge(device)
         time.sleep(5)
-        
+
+        # Startup pre-check: ensure we are at top of profile feed (like button visible)
+        try:
+            start_screenshot = capture_screenshot(device, "startup_precheck")
+            pre_like = detect_like_button_cv(start_screenshot)
+            if self.config.precheck_strict and not pre_like.get('found', False):
+                print("❌ Startup pre-check failed: like button not visible. Please navigate to the top of the profile feed (first card visible) and re-run.")
+                return {
+                    **state,
+                    "should_continue": False,
+                    "completion_reason": "Startup pre-check failed: not at top of profile feed",
+                    "last_action": "initialize_session",
+                    "action_successful": False
+                }
+        except Exception as _e:
+            if self.config.precheck_strict:
+                print(f"❌ Startup pre-check error: {_e}")
+                return {
+                    **state,
+                    "should_continue": False,
+                    "completion_reason": "Startup pre-check error",
+                    "last_action": "initialize_session",
+                    "action_successful": False
+                }
+
         # Update template weights
         success_rates = calculate_template_success_rates()
         update_template_weights(success_rates)
@@ -1285,7 +1323,7 @@ class LangGraphHingeAgent:
             print("🔍 Step 4: Finding send button with OpenCV...")
             send_screenshot = capture_screenshot(state["device"], "send_button_detection")
             
-            cv_result = detect_send_button_cv(send_screenshot)
+            cv_result = detect_send_button_cv(send_screenshot, "priority" if getattr(self.config, "like_mode", "priority") == "priority" else "normal")
             
             if cv_result.get('found'):
                 send_x = cv_result['x']
@@ -1300,6 +1338,20 @@ class LangGraphHingeAgent:
                 print(f"⚠️ Using fallback send button coordinates ({send_x}, {send_y})")
             
             # Step 5: Tap the send button
+            if getattr(self.config, "confirm_before_send", False):
+                try:
+                    print("🛑 Confirm before send enabled.")
+                    print(f"📝 Comment preview: {comment[:200]}...")
+                    answer = input("Proceed to send like now? [y/N]: ").strip().lower()
+                    if answer not in ("y", "yes"):
+                        print("❎ Send cancelled by user; not tapping send.")
+                        return {
+                            **state,
+                            "last_action": "send_comment_with_typing",
+                            "action_successful": False
+                        }
+                except Exception as _e:
+                    print(f"⚠️  Confirm-before-send prompt failed: {_e}")
             print("📤 Step 5: Tapping send button...")
             tap_with_confidence(state["device"], send_x, send_y, confidence)
             time.sleep(3)
@@ -1315,6 +1367,10 @@ class LangGraphHingeAgent:
             
             if profile_verification.get('profile_changed', False):
                 print("✅ Consolidated comment process successful - moved to new profile")
+                try:
+                    self._export_profile_row(state, True, verification_screenshot)
+                except Exception as _e:
+                    print(f"⚠️  Export failed: {_e}")
                 return {
                     **state,
                     "current_screenshot": verification_screenshot,
@@ -1332,6 +1388,10 @@ class LangGraphHingeAgent:
                 
                 if not still_in_comment.get('comment_field_found'):
                     print("✅ Consolidated comment process successful (interface closed) - stayed on profile")
+                    try:
+                        self._export_profile_row(state, True, verification_screenshot)
+                    except Exception as _e:
+                        print(f"⚠️  Export failed: {_e}")
                     return {
                         **state,
                         "current_screenshot": verification_screenshot,
@@ -1373,7 +1433,7 @@ class LangGraphHingeAgent:
             if comment_ui.get('comment_field_found'):
                 print("📤 Attempting to send like directly from comment interface...")
                 # Try CV to find the send button
-                send_try = detect_send_button_cv(fresh_screenshot)
+                send_try = detect_send_button_cv(fresh_screenshot, "priority" if getattr(self.config, "like_mode", "priority") == "priority" else "normal")
                 if send_try.get('found'):
                     send_x = send_try['x']
                     send_y = send_try['y']
@@ -1411,6 +1471,10 @@ class LangGraphHingeAgent:
                 
                 if profile_verification.get('profile_changed', False):
                     print("✅ Like sent successfully without comment (from modal) - moved to new profile")
+                    try:
+                        self._export_profile_row(state, False, verification_screenshot)
+                    except Exception as _e:
+                        print(f"⚠️  Export failed: {_e}")
                     return {
                         **state,
                         "current_screenshot": verification_screenshot,
@@ -1476,6 +1540,10 @@ class LangGraphHingeAgent:
             
             if profile_verification.get('profile_changed', False):
                 print("✅ Like sent successfully without comment - moved to new profile")
+                try:
+                    self._export_profile_row(state, False, verification_screenshot)
+                except Exception as _e:
+                    print(f"⚠️  Export failed: {_e}")
                 return {
                     **state,
                     "current_screenshot": verification_screenshot,
@@ -1714,6 +1782,64 @@ class LangGraphHingeAgent:
                 "action_successful": False
             }
     
+    def _export_profile_row(self, state: HingeAgentState, sent_comment: bool, screenshot_path: str) -> None:
+        """Append a structured row to the profile export (CSV/XLSX)."""
+        try:
+            if not getattr(self, "exporter", None):
+                return
+            analysis = state.get("profile_analysis", {}) or {}
+            def _get(key, default=""):
+                return analysis.get(key, default)
+            def _join_list(val):
+                if isinstance(val, list):
+                    try:
+                        return ", ".join(map(str, val))
+                    except Exception:
+                        return ""
+                return str(val) if val is not None else ""
+            comment_text = state.get("generated_comment", "") or ""
+            comment_hash = hashlib.sha256(comment_text.encode("utf-8")).hexdigest()[:16] if comment_text else ""
+            row = {
+                "session_id": getattr(self, "session_id", ""),
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "profile_index": state.get("current_profile_index", 0),
+                "name": _get("name", ""),
+                "estimated_age": _get("estimated_age", ""),
+                "location": _get("location", ""),
+                "profession": _get("profession", ""),
+                "education": _get("education", ""),
+                "drinks": _get("drinks", ""),
+                "smokes": _get("smokes", ""),
+                "cannabis": _get("cannabis", ""),
+                "drugs": _get("drugs", ""),
+                "religion": _get("religion", ""),
+                "politics": _get("politics", ""),
+                "kids": _get("kids", ""),
+                "wants_kids": _get("wants_kids", ""),
+                "height": _get("height", ""),
+                "languages": _join_list(_get("languages", [])),
+                "interests": _join_list(_get("interests", [])),
+                "attribute_chips_raw": _join_list(_get("attribute_chips_raw", [])),
+                "prompts_count": _get("prompt_answers", ""),
+                "extracted_text_length": len(state.get("profile_text", "") or ""),
+                "content_depth": _get("content_depth", ""),
+                "completeness": _get("profile_completeness", ""),
+                "profile_quality_score": _get("profile_quality_score", ""),
+                "conversation_potential": _get("conversation_potential", ""),
+                "should_like": analysis.get("should_like", ""),
+                "policy_reason": state.get("decision_reason", ""),
+                "like_mode": getattr(self.config, "like_mode", "priority"),
+                "sent_like": 1,
+                "sent_comment": 1 if sent_comment else 0,
+                "comment_id": state.get("comment_id", ""),
+                "comment_hash": comment_hash,
+                "screenshot_path": screenshot_path or "",
+                "errors_encountered": state.get("errors_encountered", 0),
+            }
+            self.exporter.append_row(row)
+        except Exception as e:
+            print(f"⚠️  Export row failed: {e}")
+
     @gated_step
     def finalize_session_node(self, state: HingeAgentState) -> HingeAgentState:
         """Finalize the automation session"""
@@ -1730,6 +1856,18 @@ class LangGraphHingeAgent:
             completion_reason = "Too many errors"
         
         print(f"📊 Final stats: {state['profiles_processed']} processed, {state['likes_sent']} likes, {state['comments_sent']} comments")
+        try:
+            if getattr(self, "exporter", None):
+                paths = self.exporter.get_paths()
+                csv_path = paths.get("csv") or ""
+                xlsx_path = paths.get("xlsx") or ""
+                if csv_path:
+                    print(f"📄 CSV saved: {os.path.abspath(csv_path)}")
+                if xlsx_path:
+                    print(f"📄 XLSX saved: {os.path.abspath(xlsx_path)}")
+                self.exporter.close()
+        except Exception as _e:
+            print(f"⚠️  Export close failed: {_e}")
         
         return {
             **state,

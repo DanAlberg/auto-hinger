@@ -365,7 +365,7 @@ def detect_like_button_cv(screenshot_path):
         return {'found': False, 'confidence': 0.0}
 
 
-def detect_send_button_cv(screenshot_path):
+def detect_send_button_cv(screenshot_path, preferred: str = None):
     """
     Detect send button using OpenCV template matching.
     Tries both standard and priority send button templates and returns the best match.
@@ -391,11 +391,13 @@ def detect_send_button_cv(screenshot_path):
             return {'found': False, 'confidence': 0.0}
         screenshot_gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
 
-        # Candidate templates: standard send and priority send
-        candidates = [
-            ("assets/send_button.png", "send"),
-            ("assets/send_priority_button.png", "send_priority"),
-        ]
+        # Candidate templates: order depends on preferred mode
+        standard = ("assets/send_button.png", "send")
+        priority = ("assets/send_priority_button.png", "send_priority")
+        if preferred == "normal":
+            candidates = [standard, priority]
+        else:
+            candidates = [priority, standard]
 
         best = {
             'found': False,
