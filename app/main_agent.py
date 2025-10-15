@@ -10,7 +10,7 @@ import argparse
 from typing import Dict, Any
 
 from langgraph_hinge_agent import LangGraphHingeAgent
-from agent_config import AgentConfig, DEFAULT_CONFIG, FAST_CONFIG, CONSERVATIVE_CONFIG
+from agent_config import AgentConfig, DEFAULT_CONFIG, FAST_CONFIG
 
 
 def parse_arguments():
@@ -26,7 +26,7 @@ def parse_arguments():
     
     parser.add_argument(
         "--config", "-c",
-        choices=["default", "fast", "conservative"],
+        choices=["default", "fast"],
         default="default",
         help="Configuration preset to use (default: default)"
     )
@@ -44,11 +44,6 @@ def parse_arguments():
         help="Enable verbose logging"
     )
     
-    parser.add_argument(
-        "--no-screenshots",
-        action="store_true",
-        help="Disable screenshot saving"
-    )
     parser.add_argument(
         "--manual-confirm", "--confirm-steps",
         dest="manual_confirm",
@@ -74,11 +69,18 @@ def parse_arguments():
         action="store_true",
         help="Use AI to route actions instead of deterministic step runner"
     )
+    
     parser.add_argument(
-        "--export-xlsx",
-        dest="export_xlsx",
+        "--dry-run",
+        dest="dry_run",
         action="store_true",
-        help="Also export an Excel file at the end (requires pandas/openpyxl)"
+        help="Testing mode: do not tap LIKE or SEND. No actual likes/comments are sent."
+    )
+    parser.add_argument(
+        "--no-excel", "--no-xlsx",
+        dest="no_excel",
+        action="store_true",
+        help="Disable Excel workbook logging (not recommended)."
     )
     
     return parser.parse_args()
@@ -89,8 +91,7 @@ def get_config(config_name: str, args) -> AgentConfig:
     
     configs = {
         "default": DEFAULT_CONFIG,
-        "fast": FAST_CONFIG,
-        "conservative": CONSERVATIVE_CONFIG
+        "fast": FAST_CONFIG
     }
     
     config = configs[config_name]
@@ -99,7 +100,6 @@ def get_config(config_name: str, args) -> AgentConfig:
     config.max_profiles = args.profiles
     config.device_ip = args.device_ip
     config.verbose_logging = args.verbose
-    config.save_screenshots = not args.no_screenshots
     config.manual_confirm = args.manual_confirm
     # Enable AI trace if explicitly requested or when manual confirm mode is on
     config.ai_trace = args.trace_ai or args.manual_confirm
@@ -107,7 +107,8 @@ def get_config(config_name: str, args) -> AgentConfig:
     # New flags
     config.like_mode = args.like_mode
     config.deterministic_mode = not args.ai_routing
-    config.export_xlsx = args.export_xlsx
+    config.export_xlsx = not args.no_excel
+    config.dry_run = getattr(args, "dry_run", False)
     
     return config
 
@@ -151,14 +152,14 @@ async def main():
         print(f"📱 Device IP: {config.device_ip}")
         print(f"🎯 Max Profiles: {config.max_profiles}")
         print(f"🔊 Verbose Logging: {config.verbose_logging}")
-        print(f"📸 Save Screenshots: {config.save_screenshots}")
-        print(f"🛑 Manual Confirm Mode: {config.manual_confirm}")
+        print(f" Manual Confirm Mode: {config.manual_confirm}")
         if config.manual_confirm:
             print("Manual confirmation mode ENABLED: each step requires 'y' to proceed and all actions are logged.")
         print(f"📝 AI Trace: {config.ai_trace}")
         print(f"🏷️ Like Mode: {config.like_mode}")
         print(f"🧭 Deterministic Mode: {config.deterministic_mode}")
         print(f"📊 Export XLSX: {config.export_xlsx}")
+        print(f"🧪 Dry Run Mode: {getattr(config, 'dry_run', False)}")
         print(f"🤖 AI Controller: OpenAI + LangGraph")
         print()
         

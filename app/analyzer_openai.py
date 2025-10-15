@@ -210,6 +210,7 @@ def generate_comment(profile_text: str) -> str:
     - Suggest meeting up in a clever/indirect way
     - Sound like you're genuinely interested in them as a person
     - Keep it under 40 words for maximum impact
+    - Use only plain ASCII characters (no emojis or diacritics)
 
     AVOID:
     - Generic compliments about looks
@@ -217,6 +218,7 @@ def generate_comment(profile_text: str) -> str:
     - Overly sexual or inappropriate content
     - Trying too hard to be funny
     - Being too serious or formal
+    - Emojis or non-ASCII characters
 
     Generate ONE flirty, witty comment that will get them excited to meet up:
     """
@@ -259,6 +261,7 @@ def generate_contextual_date_comment(profile_analysis: dict, profile_text: str) 
     - Suggest a specific type of date that matches their interests
     - Use humor, wit, or clever observations
     - Maximum 35 words
+    - Use only plain ASCII characters (no emojis or diacritics)
 
     Generate ONE comment that's impossible to ignore:
     """
