@@ -52,12 +52,11 @@ def test_agent_config():
     print("\n🧪 Testing agent configuration...")
 
     try:
-        from agent_config import DEFAULT_CONFIG, FAST_CONFIG, CONSERVATIVE_CONFIG
+        from agent_config import DEFAULT_CONFIG, FAST_CONFIG
 
         configs = {
             "default": DEFAULT_CONFIG,
             "fast": FAST_CONFIG,
-            "conservative": CONSERVATIVE_CONFIG,
         }
 
         for name, config in configs.items():

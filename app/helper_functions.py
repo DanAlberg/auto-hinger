@@ -104,7 +104,7 @@ def dismiss_keyboard(device, width=None, height=None):
     
     try:
         # Method 1: Press Enter (might send message in some apps)
-        print("  📥 Trying ENTER key to close keyboard...")
+        print("  � Trying ENTER key to close keyboard...")
         device.shell("input keyevent KEYCODE_ENTER")
         methods_tried.append("ENTER")
         time.sleep(1)
@@ -185,9 +185,10 @@ def input_text_robust(device, text, max_attempts=3):
     
     # Clean and prepare text
     original_text = text
+    # Sanitize newlines for adb input
+    original_text = original_text.replace("\r", " ").replace("\n", " ").strip()
     methods = [
-        ('adb_shell_direct', lambda t: device.shell(f'input text "{t}"')),
-        ('adb_shell_escaped', lambda t: device.shell(f"input text '{t}'")),
+        ('adb_shell_simple', lambda t: device.shell(f'input text {t}')),
         ('keyevent_typing', lambda t: _type_with_keyevents(device, t)),
     ]
     
@@ -198,12 +199,13 @@ def input_text_robust(device, text, max_attempts=3):
                 print(f"📝 Text to input: {original_text[:50]}...")
                 
                 # Prepare text based on method
-                if method_name == 'adb_shell_direct':
-                    # Escape quotes and special characters
-                    prepared_text = original_text.replace('"', '\\"').replace("'", "\\'").replace('`', '\\`')
-                elif method_name == 'adb_shell_escaped':
-                    # Use single quotes and escape single quotes
-                    prepared_text = original_text.replace("'", "'\"'\"'")
+                if method_name == 'adb_shell_simple':
+                    # Prepare for adb 'input text': spaces as %s, remove shell-breakers
+                    prepared_text = original_text
+                    prepared_text = " ".join(prepared_text.split())
+                    prepared_text = prepared_text.replace(" ", "%s")
+                    for ch in ['"', "'", '`', '&', '|', ';', '<', '>', '\\']:
+                        prepared_text = prepared_text.replace(ch, '')
                 else:
                     prepared_text = original_text
                 
@@ -581,3 +583,71 @@ def reset_hinge_app(device):
     time.sleep(2)
     
     print("✅ Hinge app reset completed")
+    
+    
+def detect_keyboard_tick_cv(screenshot_path, template_path="assets/tick.png"):
+    """
+    Detect keyboard 'tick' button (bottom-right) using OpenCV template matching.
+    
+    Returns:
+        dict: {
+            'found': bool,
+            'x': int, 
+            'y': int,
+            'confidence': float,
+            'width': int,
+            'height': int,
+            'top_left_x': int,
+            'top_left_y': int
+        }
+    """
+    try:
+        # Load screenshot
+        screenshot = cv2.imread(screenshot_path)
+        if screenshot is None:
+            print(f"❌ Could not load screenshot: {screenshot_path}")
+            return {'found': False, 'confidence': 0.0}
+        screenshot_gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
+
+        # Load tick template
+        if not os.path.exists(template_path):
+            print(f"❌ Tick template not found: {template_path}")
+            return {'found': False, 'confidence': 0.0}
+        template = cv2.imread(template_path)
+        if template is None:
+            print(f"❌ Could not load template: {template_path}")
+            return {'found': False, 'confidence': 0.0}
+        th, tw = template.shape[:2]
+        template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+
+        # Perform template matching
+        result = cv2.matchTemplate(screenshot_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+        confidence = float(max_val)
+        top_left = max_loc
+        center_x = top_left[0] + tw // 2
+        center_y = top_left[1] + th // 2
+        threshold = 0.5  # slightly lower as tick is small; adjust if noisy
+        found = confidence >= threshold
+
+        print(f"🎯 CV Tick Detection:")
+        print(f"   📍 Center: ({center_x}, {center_y})")
+        print(f"   📐 Template size: {tw}x{th}")
+        print(f"   🎯 Confidence: {confidence:.3f}")
+        print(f"   ✅ Found: {found} (threshold: {threshold})")
+
+        return {
+            'found': found,
+            'x': center_x,
+            'y': center_y,
+            'confidence': confidence,
+            'width': tw,
+            'height': th,
+            'top_left_x': top_left[0],
+            'top_left_y': top_left[1]
+        }
+
+    except Exception as e:
+        print(f"❌ CV tick detection failed: {e}")
+        return {'found': False, 'confidence': 0.0}

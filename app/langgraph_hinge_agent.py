@@ -19,7 +19,7 @@ from functools import wraps
 from helper_functions import (
     connect_device, get_screen_resolution, open_hinge, reset_hinge_app,
     capture_screenshot, tap, tap_with_confidence, swipe,
-    dismiss_keyboard, clear_screenshots_directory, detect_like_button_cv, detect_send_button_cv, detect_comment_field_cv, input_text_robust
+    dismiss_keyboard, clear_screenshots_directory, detect_like_button_cv, detect_send_button_cv, detect_comment_field_cv, detect_keyboard_tick_cv, input_text_robust
 )
 from analyzer import (
     extract_text_from_image, analyze_dating_ui,
@@ -143,6 +143,8 @@ class LangGraphHingeAgent:
         self.config = config or DEFAULT_CONFIG
         self.ai_client = OpenAI()
         self.graph = self._build_workflow()
+        # Cached UI coords
+        self._tick_coords = None
 
         # Manual confirm logging path
         self.manual_log_path = None
@@ -165,8 +167,7 @@ class LangGraphHingeAgent:
             self.exporter = ProfileExporter(
                 export_dir=self.config.export_dir,
                 session_id=self.session_id,
-                export_csv=getattr(self.config, "export_csv", True),
-                export_xlsx=getattr(self.config, "export_xlsx", False),
+                export_xlsx=getattr(self.config, "export_xlsx", True),
             )
         except Exception:
             self.exporter = None
@@ -1041,6 +1042,13 @@ class LangGraphHingeAgent:
         print(f"   📐 Template size: {cv_result['width']}x{cv_result['height']}")
         
         # Execute the like tap
+        if getattr(self.config, "dry_run", False):
+            print(f"🧪 DRY RUN: would tap LIKE at ({like_x}, {like_y}) - confidence: {confidence:.3f}")
+            return {
+                **updated_state,
+                "last_action": "execute_like",
+                "action_successful": True
+            }
         tap_with_confidence(state["device"], like_x, like_y, confidence)
         time.sleep(3)
         
@@ -1174,9 +1182,15 @@ class LangGraphHingeAgent:
                               comment_ui.get('comment_field_confidence', 0.8))
             time.sleep(2)
             
-            # Clear any existing text
-            state["device"].shell("input keyevent KEYCODE_CTRL_A")
-            time.sleep(0.5)
+            # Clear existing text: MOVE_END then many DEL presses
+            try:
+                state["device"].shell("input keyevent 123")  # KEYCODE_MOVE_END
+                for _ in range(5):
+                    for __ in range(16):
+                        state["device"].shell("input keyevent 67")  # KEYCODE_DEL
+                    time.sleep(0.1)
+            except Exception:
+                pass
             
             # Use robust text input with multiple fallback methods
             input_result = input_text_robust(state["device"], comment, max_attempts=2)
@@ -1294,9 +1308,15 @@ class LangGraphHingeAgent:
             # Step 2: Enter comment using ADB shell type
             print("⌨️ Step 2: Typing comment...")
             
-            # Clear any existing text
-            state["device"].shell("input keyevent KEYCODE_CTRL_A")
-            time.sleep(0.5)
+            # Clear existing text: MOVE_END then many DEL presses
+            try:
+                state["device"].shell("input keyevent 123")  # KEYCODE_MOVE_END
+                for _ in range(5):
+                    for __ in range(16):
+                        state["device"].shell("input keyevent 67")  # KEYCODE_DEL
+                    time.sleep(0.1)
+            except Exception:
+                pass
             
             # Use robust text input
             input_result = input_text_robust(state["device"], comment, max_attempts=2)
@@ -1313,11 +1333,26 @@ class LangGraphHingeAgent:
             
             print(f"✅ Comment typed successfully using {input_result['method_used']}")
             
-            # Step 3: Exit text input by tapping outside keyboard
-            print("🔽 Step 3: Dismissing keyboard...")
-            
-            dismiss_keyboard(state["device"], state["width"], state["height"])
-            time.sleep(2)
+            # Step 3: Hide keyboard via tick (bottom-right) if available, else fallback
+            print("🔽 Step 3: Hiding keyboard via tick...")
+            try:
+                if getattr(self, "_tick_coords", None) is None:
+                    tick_shot = capture_screenshot(state["device"], "tick_detection")
+                    tick = detect_keyboard_tick_cv(tick_shot)
+                    if tick.get("found"):
+                        self._tick_coords = (tick["x"], tick["y"], tick.get("confidence", 0.8))
+                if getattr(self, "_tick_coords", None):
+                    tx, ty, tconf = self._tick_coords
+                    tap_with_confidence(state["device"], tx, ty, tconf)
+                    time.sleep(1.5)
+                else:
+                    # Fallback if tick not found
+                    dismiss_keyboard(state["device"], state["width"], state["height"])
+                    time.sleep(1.5)
+            except Exception as _e:
+                print(f"⚠️ Tick hide failed, fallback to generic dismiss: {_e}")
+                dismiss_keyboard(state["device"], state["width"], state["height"])
+                time.sleep(1.5)
             
             # Step 4: Locate send button using CV
             print("🔍 Step 4: Finding send button with OpenCV...")
@@ -1353,6 +1388,13 @@ class LangGraphHingeAgent:
                 except Exception as _e:
                     print(f"⚠️  Confirm-before-send prompt failed: {_e}")
             print("📤 Step 5: Tapping send button...")
+            if getattr(self.config, "dry_run", False):
+                print(f"🧪 DRY RUN: would tap SEND at ({send_x}, {send_y}) - confidence: {confidence:.3f}")
+                return {
+                    **state,
+                    "last_action": "send_comment_with_typing",
+                    "action_successful": True
+                }
             tap_with_confidence(state["device"], send_x, send_y, confidence)
             time.sleep(3)
             
@@ -1446,7 +1488,27 @@ class LangGraphHingeAgent:
                     conf = 0.5
                     print(f"⚠️ Using fallback send coordinates in modal ({send_x}, {send_y})")
                 
-                # Tap the send button
+                # Tap the send button (with optional confirmation)
+                if getattr(self.config, "confirm_before_send", False):
+                    try:
+                        print("🛑 Confirm before send enabled.")
+                        answer = input("Proceed to send like now? [y/N]: ").strip().lower()
+                        if answer not in ("y", "yes"):
+                            print("❎ Send cancelled by user; not tapping send.")
+                            return {
+                                **state,
+                                "last_action": "send_like_without_comment",
+                                "action_successful": False
+                            }
+                    except Exception as _e:
+                        print(f"⚠️  Confirm-before-send prompt failed: {_e}")
+                if getattr(self.config, "dry_run", False):
+                    print(f"🧪 DRY RUN: would tap SEND (modal) at ({send_x}, {send_y}) - confidence: {conf:.3f}")
+                    return {
+                        **state,
+                        "last_action": "send_like_without_comment",
+                        "action_successful": True
+                    }
                 tap_with_confidence(state["device"], send_x, send_y, conf)
                 time.sleep(3)
                 
@@ -1515,6 +1577,13 @@ class LangGraphHingeAgent:
             print(f"   🎯 CV Confidence: {confidence:.3f}")
             
             # Execute the like tap
+            if getattr(self.config, "dry_run", False):
+                print(f"🧪 DRY RUN: would tap LIKE (fallback) at ({like_x}, {like_y}) - confidence: {confidence:.3f}")
+                return {
+                    **state,
+                    "last_action": "send_like_without_comment",
+                    "action_successful": True
+                }
             tap_with_confidence(state["device"], like_x, like_y, confidence)
             time.sleep(3)
             
@@ -1783,7 +1852,7 @@ class LangGraphHingeAgent:
             }
     
     def _export_profile_row(self, state: HingeAgentState, sent_comment: bool, screenshot_path: str) -> None:
-        """Append a structured row to the profile export (CSV/XLSX)."""
+        """Append a structured row to the profile export (XLSX)."""
         try:
             if not getattr(self, "exporter", None):
                 return
@@ -1840,6 +1909,174 @@ class LangGraphHingeAgent:
         except Exception as e:
             print(f"⚠️  Export row failed: {e}")
 
+    # Deterministic runner helpers (no AI planner)
+    def _fail(self, state: HingeAgentState, reason: str, last_action: str) -> HingeAgentState:
+        """Fail fast helper: stop the session with a clear reason."""
+        return {
+            **state,
+            "should_continue": False,
+            "completion_reason": reason,
+            "last_action": last_action,
+            "action_successful": False
+        }
+
+    def run_profile_flowchart(self, state: HingeAgentState) -> HingeAgentState:
+        """
+        Deterministic per-profile flow:
+        - capture_screenshot -> analyze_profile -> make_like_decision
+        - if like: detect_like_button -> execute_like -> (generate_comment -> send_comment_with_typing) else send_like_without_comment
+        - else dislike
+        - if still not moved: navigate_to_next
+        A single attempt per step; failures fail-fast (no retries).
+        """
+        s = state
+
+        # 1) Capture screenshot
+        s = self.capture_screenshot_node(s)
+        if not s.get("action_successful"):
+            return self._fail(s, "Failed to capture screenshot", "capture_screenshot")
+
+        # 2) Analyze profile (comprehensive)
+        s = self.analyze_profile_node(s)
+        if not s.get("action_successful"):
+            return self._fail(s, "Failed to analyze profile", "analyze_profile")
+
+        # 3) Decide like/dislike (deterministic via config thresholds)
+        s = self.make_like_decision_node(s)
+        if not s.get("action_successful"):
+            return self._fail(s, "Failed to make like/dislike decision", "make_like_decision")
+
+        should_like = bool(s.get("profile_analysis", {}).get("should_like", False))
+
+        if should_like:
+            # 4) Find like button (CV)
+            s = self.detect_like_button_node(s)
+            if not s.get("action_successful"):
+                return self._fail(s, "Like button not found", "detect_like_button")
+
+            # 5) Execute like
+            s = self.execute_like_node(s)
+            if not s.get("action_successful"):
+                return self._fail(s, "Failed to execute like", "execute_like")
+
+            # 6) Prefer sending with comment when comment interface path works
+            # Generate comment
+            s_gen = self.generate_comment_node(s)
+            if s_gen.get("action_successful"):
+                # Try to send the comment
+                s_send = self.send_comment_with_typing_node(s_gen)
+                if s_send.get("action_successful"):
+                    s = s_send
+                else:
+                    # Fallback: like without comment
+                    s_fb = self.send_like_without_comment_node(s)
+                    if not s_fb.get("action_successful"):
+                        return self._fail(s_fb, "Failed to send like (fallback) after comment send failed", "send_like_without_comment")
+                    s = s_fb
+            else:
+                # If comment generation failed, attempt like without comment once
+                s_fb = self.send_like_without_comment_node(s)
+                if not s_fb.get("action_successful"):
+                    return self._fail(s_fb, "Failed to send like (no comment path)", "send_like_without_comment")
+                s = s_fb
+
+        else:
+            # Dislike path
+            s = self.execute_dislike_node(s)
+            if not s.get("action_successful"):
+                return self._fail(s, "Failed to execute dislike", "execute_dislike")
+
+        # 7) If we're still on the same profile, try a single navigation step
+        s_ver = self.verify_profile_change_node(s)
+        if not s_ver.get("action_successful"):
+            s_nav = self.navigate_to_next_node(s)
+            if not s_nav.get("action_successful"):
+                return self._fail(s_nav, "Failed to navigate to next profile", "navigate_to_next")
+            s = s_nav
+        else:
+            s = s_ver
+
+        return s
+
+    def _run_automation_deterministic(self) -> Dict[str, Any]:
+        """
+        Deterministic automation (no AI planner):
+        - initialize session
+        - iterate max_profiles calling run_profile_flowchart
+        - finalize session
+        """
+        print("🚀 Starting Deterministic Hinge automation...")
+        print(f"📊 Processing up to {self.max_profiles} profiles deterministically")
+
+        # Build initial state (similar shape to batch init)
+        init_state: HingeAgentState = HingeAgentState(
+            device=None,
+            width=0,
+            height=0,
+            max_profiles=self.max_profiles,
+            current_profile_index=0,
+            profiles_processed=0,
+            likes_sent=0,
+            comments_sent=0,
+            errors_encountered=0,
+            stuck_count=0,
+            current_screenshot=None,
+            profile_text="",
+            profile_analysis={},
+            decision_reason="",
+            previous_profile_text="",
+            previous_profile_features={},
+            last_action="",
+            action_successful=True,
+            retry_count=0,
+            generated_comment="",
+            comment_id="",
+            like_button_coords=None,
+            like_button_confidence=0.0,
+            should_continue=True,
+            completion_reason="",
+            ai_reasoning="",
+            next_tool_suggestion="",
+            batch_start_index=0
+        )
+
+        # Initialize session
+        s = self.initialize_session_node(init_state)
+        if not s.get("action_successful") or not s.get("should_continue", True):
+            # Finalize early with failure reason
+            s = self.finalize_session_node(s)
+            return {
+                "success": False,
+                "profiles_processed": s.get("profiles_processed", 0),
+                "likes_sent": s.get("likes_sent", 0),
+                "comments_sent": s.get("comments_sent", 0),
+                "errors_encountered": s.get("errors_encountered", 0),
+                "completion_reason": s.get("completion_reason", "Initialization failed"),
+                "final_success_rates": {}
+            }
+
+        # Process profiles deterministically
+        for idx in range(self.max_profiles):
+            if not s.get("should_continue", True):
+                break
+            # Ensure index is set for logging
+            s["current_profile_index"] = idx
+            s = self.run_profile_flowchart(s)
+            if not s.get("should_continue", True):
+                break
+
+        # Finalize
+        s = self.finalize_session_node(s)
+        return {
+            "success": True,
+            "profiles_processed": s.get("profiles_processed", 0),
+            "likes_sent": s.get("likes_sent", 0),
+            "comments_sent": s.get("comments_sent", 0),
+            "errors_encountered": s.get("errors_encountered", 0),
+            "completion_reason": s.get("completion_reason", "Session completed"),
+            "final_success_rates": {}
+        }
+
     @gated_step
     def finalize_session_node(self, state: HingeAgentState) -> HingeAgentState:
         """Finalize the automation session"""
@@ -1859,10 +2096,7 @@ class LangGraphHingeAgent:
         try:
             if getattr(self, "exporter", None):
                 paths = self.exporter.get_paths()
-                csv_path = paths.get("csv") or ""
                 xlsx_path = paths.get("xlsx") or ""
-                if csv_path:
-                    print(f"📄 CSV saved: {os.path.abspath(csv_path)}")
                 if xlsx_path:
                     print(f"📄 XLSX saved: {os.path.abspath(xlsx_path)}")
                 self.exporter.close()
@@ -1969,6 +2203,9 @@ class LangGraphHingeAgent:
     
     def run_automation(self) -> Dict[str, Any]:
         """Run the complete LangGraph automation workflow with batch processing"""
+        # Deterministic mode: use flowchart runner instead of AI planner
+        if getattr(self.config, "deterministic_mode", True):
+            return self._run_automation_deterministic()
         print("🚀 Starting LangGraph-powered Hinge automation with batch processing...")
         print(f"📊 Processing {self.max_profiles} profiles in batches of {self.profiles_per_batch}")
         

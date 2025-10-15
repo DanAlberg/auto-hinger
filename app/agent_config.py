@@ -71,12 +71,14 @@ class AgentConfig:
     # AI tracing
     ai_trace: bool = False
     ai_trace_log_dir: str = "logs"
+    # Testing and typing verification
+    dry_run: bool = False  # when True, never send likes/comments (skips Send taps)
+    verify_typed_text: bool = False  # optional OCR sanity check after typing (off by default)
     
     # Deterministic control & export settings
     deterministic_mode: bool = True
     like_mode: str = "priority"  # "priority" or "normal"
-    export_csv: bool = True
-    export_xlsx: bool = False
+    export_xlsx: bool = True
     export_dir: str = "logs"
     precheck_strict: bool = True
     sync_check_at_stages: bool = True
@@ -113,19 +115,4 @@ FAST_CONFIG = AgentConfig(
     quality_threshold_high=7,
     quality_threshold_medium=5,
     conversation_threshold_high=6
-)
-
-# Conservative configuration (slower, more thorough)
-CONSERVATIVE_CONFIG = AgentConfig(
-    max_profiles=5,
-    max_retries_per_action=5,
-    max_errors_before_abort=8,
-    screenshot_delay=2.0,
-    action_delay=3.0,
-    navigation_delay=4.0,
-    max_scroll_attempts=4,
-    quality_threshold_high=9,
-    quality_threshold_medium=7,
-    conversation_threshold_high=8,
-    min_positive_indicators=3
 )

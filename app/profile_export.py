@@ -1,12 +1,8 @@
-import csv
 import os
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
-try:
-    import pandas as pd  # Optional; used only if export_xlsx=True and pandas is available
-except Exception:
-    pd = None
+from openpyxl import Workbook, load_workbook
 
 
 DEFAULT_SCHEMA: List[str] = [
@@ -56,115 +52,168 @@ DEFAULT_SCHEMA: List[str] = [
 
 class ProfileExporter:
     """
-    Streams profile rows to CSV and optionally writes an XLSX at session end.
-    - CSV is written incrementally for robustness.
-    - XLSX is written at close() if enabled and pandas is available.
+    Excel-only exporter with incremental writes:
+    - Writes a row to auto-hinger/profiles.xlsx after each profile.
+    - Guards against consecutive duplicate rows using (name, estimated_age, height).
     """
 
     def __init__(
         self,
         export_dir: str,
         session_id: str,
-        export_csv: bool = True,
-        export_xlsx: bool = False,
+        export_xlsx: bool = True,
         schema: Optional[List[str]] = None,
     ) -> None:
         self.export_dir = export_dir
         self.session_id = session_id
-        self.export_csv = export_csv
-        self.export_xlsx = export_xlsx and (pd is not None)
+        self.export_xlsx = export_xlsx
 
         self.schema = schema or DEFAULT_SCHEMA
-        self.rows_buffer: List[Dict[str, Any]] = []
 
-        os.makedirs(self.export_dir, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.csv_path = os.path.join(self.export_dir, f"profiles_{self.session_id}.csv")
-        self.xlsx_path = os.path.join(self.export_dir, f"profiles_{self.session_id}.xlsx")
         # Persistent workbook at repository root (auto-hinger/profiles.xlsx)
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
         self.persistent_xlsx_path = os.path.join(repo_root, "profiles.xlsx")
 
-        self._csv_file = None
-        self._csv_writer = None
-        self._csv_header_written = False
+        # Initialize workbook and header, and seed last-row signature
+        self._last_xlsx_signature: Optional[Tuple[str, str, str]] = None
+        if self.export_xlsx:
+            self._ensure_xlsx_header()
+            self._seed_last_signature_from_xlsx()
 
-        if self.export_csv:
-            # Open CSV in append mode; write header on first append
-            self._csv_file = open(self.csv_path, mode="a", encoding="utf-8-sig", newline="")
-            self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=self.schema, extrasaction="ignore")
+    def _ensure_xlsx_header(self) -> None:
+        """Ensure profiles.xlsx exists and has header row."""
+        try:
+            if not os.path.exists(self.persistent_xlsx_path):
+                wb = Workbook()
+                ws = wb.active
+                ws.title = "profiles"
+                ws.append(self.schema)
+                wb.save(self.persistent_xlsx_path)
+                wb.close()
+            else:
+                wb = load_workbook(self.persistent_xlsx_path)
+                ws = wb.active
+                # If workbook exists but has no rows, add header
+                if ws.max_row == 0:
+                    ws.append(self.schema)
+                    wb.save(self.persistent_xlsx_path)
+                wb.close()
+        except Exception as e:
+            print(f"Warning: Failed to initialize XLSX: {e}")
 
-    def _ensure_csv_header(self) -> None:
-        if self.export_csv and self._csv_writer and not self._csv_header_written:
-            self._csv_writer.writeheader()
-            self._csv_header_written = True
+    def _seed_last_signature_from_xlsx(self) -> None:
+        """Read the last data row from XLSX to initialize the duplicate guard signature."""
+        try:
+            if not os.path.exists(self.persistent_xlsx_path):
+                self._last_xlsx_signature = None
+                return
+            wb = load_workbook(self.persistent_xlsx_path, read_only=True)
+            ws = wb.active
+            if ws.max_row and ws.max_row >= 2:
+                # Read header names from first row
+                header_vals = [cell.value if cell.value is not None else "" for cell in next(ws.iter_rows(min_row=1, max_row=1, values_only=False))]
+                def idx(col: str) -> Optional[int]:
+                    try:
+                        return header_vals.index(col)
+                    except ValueError:
+                        return None
+                idx_name = idx("name")
+                idx_age = idx("estimated_age")
+                idx_height = idx("height")
+                # Iterate to last row (read_only mode)
+                last = None
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    last = row
+                if last is not None:
+                    name_val = (last[idx_name] if idx_name is not None and idx_name < len(last) else "") if last else ""
+                    age_val = (last[idx_age] if idx_age is not None and idx_age < len(last) else "") if last else ""
+                    height_val = (last[idx_height] if idx_height is not None and idx_height < len(last) else "") if last else ""
+                    self._last_xlsx_signature = (
+                        str(name_val or "").strip().lower(),
+                        str(age_val or "").strip(),
+                        str(height_val or "").strip(),
+                    )
+            wb.close()
+        except Exception:
+            # Non-fatal: if unreadable, leave as None
+            self._last_xlsx_signature = None
+
+    def _compute_signature(self, row: Dict[str, Any]) -> Tuple[str, str, str]:
+        name = (row.get("name", "") or "")
+        age = row.get("estimated_age", "")
+        height = row.get("height", "")
+        return (str(name).strip().lower(), str(age).strip(), str(height).strip())
 
     def append_row(self, row: Dict[str, Any]) -> None:
         """
-        Append a single profile row.
-        Missing keys will be filled with empty strings for CSV schema compatibility.
+        Append a single profile row to Excel with a consecutive-duplicate guard.
+        - Skip only if the last written row has the same (name, age, height) AND the same sent_like/sent_comment flags.
+        - If action flags changed (e.g., sent_like flips from 0 to 1), allow appending.
         """
-        # Normalize row to schema for CSV
-        csv_row = {k: row.get(k, "") for k in self.schema}
+        if not self.export_xlsx:
+            return
 
-        if self.export_csv and self._csv_writer:
-            self._ensure_csv_header()
-            self._csv_writer.writerow(csv_row)
-            # Flush quickly to avoid data loss if interrupted
-            try:
-                self._csv_file.flush()
-                os.fsync(self._csv_file.fileno())
-            except Exception:
-                pass
+        try:
+            sig = self._compute_signature(row)
+            wb = load_workbook(self.persistent_xlsx_path)
+            ws = wb.active
 
-        # Always buffer rows for potential XLSX output
-        self.rows_buffer.append(row.copy())
+            # Build header index map
+            header_cells = next(ws.iter_rows(min_row=1, max_row=1, values_only=False))
+            header_vals = [cell.value if cell.value is not None else "" for cell in header_cells]
+            def idx(col: str) -> Optional[int]:
+                try:
+                    return header_vals.index(col)
+                except ValueError:
+                    return None
+            idx_name = idx("name")
+            idx_age = idx("estimated_age")
+            idx_height = idx("height")
+            idx_sent_like = idx("sent_like")
+            idx_sent_comment = idx("sent_comment")
+
+            # Check last row for consecutive-duplicate (including action flags)
+            should_skip = False
+            if ws.max_row and ws.max_row >= 2:
+                last = None
+                for r in ws.iter_rows(min_row=2, values_only=True):
+                    last = r
+                if last is not None:
+                    last_name = (last[idx_name] if idx_name is not None and idx_name < len(last) else "") if last else ""
+                    last_age = (last[idx_age] if idx_age is not None and idx_age < len(last) else "") if last else ""
+                    last_height = (last[idx_height] if idx_height is not None and idx_height < len(last) else "") if last else ""
+                    last_sig = (
+                        str(last_name or "").strip().lower(),
+                        str(last_age or "").strip(),
+                        str(last_height or "").strip(),
+                    )
+                    if last_sig == sig:
+                        # Compare action flags; treat missing as 0
+                        last_like = last[idx_sent_like] if (idx_sent_like is not None and idx_sent_like < len(last)) else 0
+                        last_comment = last[idx_sent_comment] if (idx_sent_comment is not None and idx_sent_comment < len(last)) else 0
+                        new_like = row.get("sent_like", 0) or 0
+                        new_comment = row.get("sent_comment", 0) or 0
+                        if int(last_like or 0) == int(new_like or 0) and int(last_comment or 0) == int(new_comment or 0):
+                            should_skip = True
+
+            if should_skip:
+                wb.close()
+                return
+
+            # Append row
+            ws.append([row.get(col, "") for col in self.schema])
+            wb.save(self.persistent_xlsx_path)
+            wb.close()
+            self._last_xlsx_signature = sig
+        except Exception as e:
+            # Non-fatal: log and continue
+            print(f"Warning: Failed to append to XLSX: {e}")
 
     def close(self) -> None:
-        # Close CSV handle
-        try:
-            if self._csv_file:
-                self._csv_file.close()
-        except Exception:
-            pass
-        finally:
-            self._csv_file = None
-            self._csv_writer = None
-
-        # Optionally write XLSX at the end using pandas
-        if self.export_xlsx and pd is not None:
-            try:
-                # Build a superset of keys across rows to preserve all columns
-                all_keys = set(self.schema)
-                for r in self.rows_buffer:
-                    all_keys.update(r.keys())
-                ordered_cols = [c for c in self.schema] + [k for k in all_keys if k not in self.schema]
-
-                new_df = pd.DataFrame(self.rows_buffer)
-                # Reorder columns for new data buffer first
-                new_df = new_df.reindex(columns=ordered_cols)
-                # Append to a persistent workbook (auto-hinger/profiles.xlsx)
-                if os.path.exists(self.persistent_xlsx_path):
-                    try:
-                        existing_df = pd.read_excel(self.persistent_xlsx_path)
-                        # Union columns between existing and new
-                        all_cols = list(dict.fromkeys(list(existing_df.columns) + list(new_df.columns)))
-                        existing_df = existing_df.reindex(columns=all_cols)
-                        new_df = new_df.reindex(columns=all_cols)
-                        out_df = pd.concat([existing_df, new_df], ignore_index=True)
-                    except Exception:
-                        # If existing file unreadable, fall back to new only
-                        out_df = new_df
-                else:
-                    out_df = new_df
-                # Write back to persistent path
-                out_df.to_excel(self.persistent_xlsx_path, index=False)
-            except Exception as e:
-                # XLSX is best-effort; do not raise
-                print(f"Warning: Failed to write XLSX export: {e}")
+        # No persistent handles; nothing to close for XLSX.
+        pass
 
     def get_paths(self) -> Dict[str, str]:
         return {
-            "csv": self.csv_path if self.export_csv else "",
-            "xlsx": self.persistent_xlsx_path if (self.export_xlsx and pd is not None) else "",
+            "xlsx": self.persistent_xlsx_path if self.export_xlsx else "",
         }
