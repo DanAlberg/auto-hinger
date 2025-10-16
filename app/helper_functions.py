@@ -4,6 +4,15 @@ import cv2
 import numpy as np
 import os
 import glob
+from typing import Sequence, Union, List, Tuple, Dict, Any
+
+
+def _should_emit_cv_debug() -> bool:
+    """Gate additional per-template CV overlays by env var set from config (scrape-only/verbose)."""
+    try:
+        return os.environ.get("HINGE_CV_DEBUG_MODE", "0") == "1"
+    except Exception:
+        return False
 
 
 
@@ -653,7 +662,7 @@ def detect_keyboard_tick_cv(screenshot_path, template_path="assets/tick.png"):
         return {'found': False, 'confidence': 0.0}
 
 
-def detect_age_icon_cv(screenshot_path, template_path="assets/age_icon.png"):
+def detect_age_icon_cv(screenshot_path, template_path="assets/icon_age_white.png"):
     """
     Detect the profile 'age' icon using OpenCV template matching to infer the Y
     coordinate of the horizontal photo scroller.
@@ -726,7 +735,7 @@ def detect_age_icon_cv(screenshot_path, template_path="assets/age_icon.png"):
 
 def detect_age_icon_cv_multi(
     screenshot_path: str,
-    template_path: str = "assets/age_icon.png",
+    template_path: Union[str, Sequence[str]] = "assets/icon_age_white.png",
     roi_top: float = 0.0,
     roi_bottom: float = 0.55,
     scales: list = None,
@@ -735,11 +744,13 @@ def detect_age_icon_cv_multi(
     save_debug: bool = True
 ) -> dict:
     """
-    Robust age icon detection:
+    Robust age/gender icon detection (multi-template, multi-scale).
+    - Accepts a single template path or a list/tuple of template paths.
     - Searches within a vertical ROI (fraction of screen height).
-    - Tries multiple scales of the template.
+    - Tries multiple scales per template.
     - Optionally matches on edges to reduce tint/contrast sensitivity.
-    - Writes a debug overlay image when save_debug=True.
+    - If template has alpha channel, uses it as a mask with TM_CCORR_NORMED (non-edges mode).
+    - Writes a debug overlay image when save_debug=True for the best match.
 
     Returns:
         dict: {
@@ -749,11 +760,12 @@ def detect_age_icon_cv_multi(
             'width': int, 'height': int,
             'top_left_x': int, 'top_left_y': int,
             'scale': float,
+            'template_used': str,
             'debug_image_path': str
         }
     """
     try:
-        img = cv2.imread(screenshot_path)
+        img = cv2.imread(screenshot_path, cv2.IMREAD_COLOR)
         if img is None:
             print(f"❌ Could not load screenshot: {screenshot_path}")
             return {'found': False, 'confidence': 0.0}
@@ -765,65 +777,126 @@ def detect_age_icon_cv_multi(
             print("❌ ROI empty for age icon detection")
             return {'found': False, 'confidence': 0.0}
 
-        tpl = cv2.imread(template_path)
-        if tpl is None:
-            print(f"❌ Could not load age icon template: {template_path}")
-            return {'found': False, 'confidence': 0.0}
-
-        # Prepare base images
-        if use_edges:
-            roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            roi_proc = cv2.Canny(roi_gray, 50, 150)
-        else:
-            roi_proc = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-
-        base_tpl_gray = cv2.cvtColor(tpl, cv2.COLOR_BGR2GRAY)
+        # Prepare ROI representations
+        roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        roi_edges = cv2.Canny(roi_gray, 50, 150) if use_edges else None
 
         # Build scale list
         if not scales:
             scales = [round(s, 2) for s in np.arange(0.6, 1.51, 0.1).tolist()]
 
+        # Normalize template paths to a list
+        tpl_paths: List[str] = list(template_path) if isinstance(template_path, (list, tuple)) else [template_path]
+
+        def _load_template_with_alpha(path: str):
+            tpl_rgba = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+            if tpl_rgba is None:
+                print(f"❌ Could not load age/gender icon template: {path}")
+                return None, None
+            if tpl_rgba.ndim == 3 and tpl_rgba.shape[2] == 4:
+                bgr = tpl_rgba[:, :, :3]
+                alpha = tpl_rgba[:, :, 3]
+            else:
+                bgr = tpl_rgba if tpl_rgba.ndim == 3 else cv2.cvtColor(tpl_rgba, cv2.COLOR_GRAY2BGR)
+                alpha = None
+            tpl_gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+            return tpl_gray, alpha
+
         best = {
             'found': False, 'confidence': 0.0, 'x': 0, 'y': 0,
             'width': 0, 'height': 0, 'top_left_x': 0, 'top_left_y': 0,
-            'scale': 1.0, 'debug_image_path': ""
+            'scale': 1.0, 'template_used': "", 'debug_image_path': ""
         }
 
-        method = cv2.TM_CCOEFF_NORMED
-        for s in scales:
-            # Resize template for this scale
-            tw = max(1, int(base_tpl_gray.shape[1] * s))
-            th = max(1, int(base_tpl_gray.shape[0] * s))
-            tpl_s = cv2.resize(base_tpl_gray, (tw, th), interpolation=cv2.INTER_AREA)
-            if use_edges:
-                tpl_s = cv2.Canny(tpl_s, 50, 150)
-
-            if roi_proc.shape[0] < tpl_s.shape[0] or roi_proc.shape[1] < tpl_s.shape[1]:
+        for path in tpl_paths:
+            tpl_gray, alpha = _load_template_with_alpha(path)
+            if tpl_gray is None:
                 continue
 
-            res = cv2.matchTemplate(roi_proc, tpl_s, method)
-            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
-            if max_val > best['confidence']:
-                top_left = max_loc
-                center_x = top_left[0] + tw // 2
-                center_y = top_left[1] + th // 2
-                # Convert to full-image coordinates
-                full_x = center_x
-                full_y = y0 + center_y
-                best.update({
-                    'confidence': float(max_val),
-                    'x': int(full_x),
-                    'y': int(full_y),
-                    'width': int(tw),
-                    'height': int(th),
-                    'top_left_x': int(top_left[0]),
-                    'top_left_y': int(y0 + top_left[1]),
-                    'scale': float(s),
-                })
+            for s in scales:
+                tw = max(1, int(tpl_gray.shape[1] * s))
+                th = max(1, int(tpl_gray.shape[0] * s))
+                if tw <= 1 or th <= 1:
+                    continue
+
+                tpl_s = cv2.resize(tpl_gray, (tw, th), interpolation=cv2.INTER_AREA)
+
+                # Choose ROI and method based on edges vs grayscale
+                if use_edges:
+                    if roi_edges is None or roi_edges.shape[0] < th or roi_edges.shape[1] < tw:
+                        continue
+                    tpl_proc = cv2.Canny(tpl_s, 50, 150)
+                    if roi_edges.shape[0] < tpl_proc.shape[0] or roi_edges.shape[1] < tpl_proc.shape[1]:
+                        continue
+                    res = cv2.matchTemplate(roi_edges, tpl_proc, cv2.TM_CCOEFF_NORMED)
+                else:
+                    roi_proc = roi_gray
+                    if roi_proc.shape[0] < th or roi_proc.shape[1] < tw:
+                        continue
+                    # If template has alpha, use it as mask with TM_CCORR_NORMED
+                    if alpha is not None:
+                        mask_s = cv2.resize(alpha, (tw, th), interpolation=cv2.INTER_NEAREST)
+                        if mask_s.dtype != np.uint8:
+                            mask_s = mask_s.astype(np.uint8)
+                        res = cv2.matchTemplate(roi_proc, tpl_s, cv2.TM_CCORR_NORMED, mask=mask_s)
+                    else:
+                        # Build near-white background mask for white PNGs (keep icon strokes only)
+                        tpl_gray_s = tpl_s
+                        _, mask_s = cv2.threshold(tpl_gray_s, 250, 255, cv2.THRESH_BINARY_INV)
+                        mask_s = mask_s.astype(np.uint8)
+                        if mask_s.shape != tpl_gray_s.shape:
+                            mask_s = cv2.resize(mask_s, (tw, th), interpolation=cv2.INTER_NEAREST)
+                        res = cv2.matchTemplate(roi_proc, tpl_s, cv2.TM_CCORR_NORMED, mask=mask_s)
+
+                _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                # Per-template CV overlay (when gated), shows the top match for this template/scale
+                if save_debug and _should_emit_cv_debug():
+                    try:
+                        dbg_tpl = img.copy()
+                        tl_full = (int(max_loc[0]), int(y0 + max_loc[1]))
+                        br_full = (tl_full[0] + int(tw), tl_full[1] + int(th))
+                        color = (0, 255, 255)  # yellow-ish for per-template overlays
+                        cv2.rectangle(dbg_tpl, tl_full, br_full, color, 2)
+                        label = f"tpl={os.path.basename(path)} conf={float(max_val):.2f} s={float(s):.2f}"
+                        cv2.putText(
+                            dbg_tpl,
+                            label,
+                            (tl_full[0], max(0, tl_full[1] - 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6,
+                            color,
+                            2,
+                            cv2.LINE_AA,
+                        )
+                        os.makedirs("images", exist_ok=True)
+                        cv_path = os.path.join(
+                            "images",
+                            f"debug_cv_{os.path.splitext(os.path.basename(path))[0]}_{int(time.time()*1000)}.png",
+                        )
+                        cv2.imwrite(cv_path, dbg_tpl)
+                    except Exception:
+                        pass
+                if float(max_val) > best['confidence']:
+                    top_left = max_loc
+                    center_x = top_left[0] + tw // 2
+                    center_y = top_left[1] + th // 2
+                    full_x = center_x
+                    full_y = y0 + center_y
+                    best.update({
+                        'confidence': float(max_val),
+                        'x': int(full_x),
+                        'y': int(full_y),
+                        'width': int(tw),
+                        'height': int(th),
+                        'top_left_x': int(top_left[0]),
+                        'top_left_y': int(y0 + top_left[1]),
+                        'scale': float(s),
+                        'template_used': path,
+                    })
 
         best['found'] = best['confidence'] >= threshold
 
-        # Debug overlay
+        # Debug overlay for the best match
         if save_debug:
             dbg = img.copy()
             if best['width'] > 0 and best['height'] > 0:
@@ -831,8 +904,11 @@ def detect_age_icon_cv_multi(
                 br = (best['top_left_x'] + best['width'], best['top_left_y'] + best['height'])
                 color = (0, 255, 0) if best['found'] else (0, 0, 255)
                 cv2.rectangle(dbg, tl, br, color, 3)
+                label = f"conf={best['confidence']:.2f}, s={best['scale']:.2f}"
+                if best.get('template_used'):
+                    label += f", tpl={os.path.basename(best['template_used'])}"
                 cv2.putText(
-                    dbg, f"conf={best['confidence']:.2f}, s={best['scale']:.2f}",
+                    dbg, label,
                     (tl[0], max(0, tl[1]-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA
                 )
             dbg_path = os.path.join("images", f"debug_age_icon_{int(time.time()*1000)}.png")
@@ -844,13 +920,167 @@ def detect_age_icon_cv_multi(
             except Exception as _:
                 pass
 
-        print(f"🎯 Age icon multi-scale result: found={best['found']} conf={best['confidence']:.3f} scale={best['scale']:.2f}")
+        print(f"🎯 Age icon multi-scale result: found={best['found']} conf={best['confidence']:.3f} scale={best['scale']:.2f} tpl={os.path.basename(best.get('template_used',''))}")
         return best
 
     except Exception as e:
         print(f"❌ Multi-scale age icon detection failed: {e}")
         return {'found': False, 'confidence': 0.0}
 
+
+def detect_age_row_dual_templates(
+    screenshot_path: str,
+    template_paths: Sequence[str],
+    roi_top: float = 0.0,
+    roi_bottom: float = 0.55,
+    threshold: float = 0.55,
+    use_edges: bool = True,
+    save_debug: bool = True,
+    tolerance_px: int = 5,
+    tolerance_ratio: float = 0.005,
+    require_both: bool = True
+) -> dict:
+    """
+    Run detection for two templates (e.g., age and gender icons) and derive a consensus Y.
+    - Both icons should lie on the same horizontal row; if their Y differ slightly, take the average.
+    - If their Y differ more than tolerance, return found=False with error="y_mismatch".
+    - If one is missing and require_both is True, return found=False with error="one_icon_missing".
+    - Writes a composite overlay showing both boxes and lines (age=green, gender=blue, avg=magenta).
+    """
+    try:
+        tpls = list(template_paths or [])
+        if len(tpls) < 2:
+            single = detect_age_icon_cv_multi(
+                screenshot_path,
+                template_path=tpls[0] if tpls else "assets/icon_age.png",
+                roi_top=roi_top,
+                roi_bottom=roi_bottom,
+                threshold=threshold,
+                use_edges=use_edges,
+                save_debug=save_debug
+            )
+            single['method'] = 'single_template'
+            single['results'] = [single]
+            single['delta_y'] = 0
+            single['tolerance'] = 0
+            single['error'] = None if single.get('found') else 'single_template_only'
+            return single
+
+        res1 = detect_age_icon_cv_multi(
+            screenshot_path,
+            template_path=tpls[0],
+            roi_top=roi_top,
+            roi_bottom=roi_bottom,
+            threshold=threshold,
+            use_edges=use_edges,
+            save_debug=save_debug
+        )
+        res2 = detect_age_icon_cv_multi(
+            screenshot_path,
+            template_path=tpls[1],
+            roi_top=roi_top,
+            roi_bottom=roi_bottom,
+            threshold=threshold,
+            use_edges=use_edges,
+            save_debug=save_debug
+        )
+
+        img = cv2.imread(screenshot_path, cv2.IMREAD_COLOR)
+        if img is None:
+            return {'found': False, 'error': 'load_image_failed'}
+
+        h, w = img.shape[:2]
+        tol = max(int(tolerance_px), int(h * float(tolerance_ratio)))
+
+        both_found = bool(res1.get('found')) and bool(res2.get('found'))
+        error = None
+        y_avg = None
+        delta_y = None
+
+        if both_found:
+            y1 = int(res1.get('y', 0))
+            y2 = int(res2.get('y', 0))
+            delta_y = abs(y1 - y2)
+            if delta_y <= tol:
+                y_avg = int(round((y1 + y2) / 2))
+            else:
+                error = "y_mismatch"
+        else:
+            if require_both:
+                error = "one_icon_missing"
+
+        found = (y_avg is not None)
+
+        # Composite overlay
+        dbg = img.copy()
+        if res1.get('width', 0) > 0 and res1.get('height', 0) > 0:
+            tl1 = (int(res1.get('top_left_x', 0)), int(res1.get('top_left_y', 0)))
+            br1 = (tl1[0] + int(res1.get('width', 0)), tl1[1] + int(res1.get('height', 0)))
+            cv2.rectangle(dbg, tl1, br1, (0, 255, 0), 3)
+            cv2.putText(dbg, f"{os.path.basename(res1.get('template_used',''))} conf={res1.get('confidence',0.0):.2f}",
+                        (tl1[0], max(0, tl1[1]-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2, cv2.LINE_AA)
+        if res2.get('width', 0) > 0 and res2.get('height', 0) > 0:
+            tl2 = (int(res2.get('top_left_x', 0)), int(res2.get('top_left_y', 0)))
+            br2 = (tl2[0] + int(res2.get('width', 0)), tl2[1] + int(res2.get('height', 0)))
+            cv2.rectangle(dbg, tl2, br2, (255, 0, 0), 3)
+            cv2.putText(dbg, f"{os.path.basename(res2.get('template_used',''))} conf={res2.get('confidence',0.0):.2f}",
+                        (tl2[0], max(0, tl2[1]-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,0,0), 2, cv2.LINE_AA)
+
+        if res1.get('found'):
+            y1 = int(res1.get('y', 0))
+            cv2.line(dbg, (0, y1), (w, y1), (0, 255, 0), 2)
+        if res2.get('found'):
+            y2 = int(res2.get('y', 0))
+            cv2.line(dbg, (0, y2), (w, y2), (255, 0, 0), 2)
+        if y_avg is not None:
+            cv2.line(dbg, (0, y_avg), (w, y_avg), (255, 0, 255), 2)
+
+        label = f"found={found}"
+        if delta_y is not None:
+            label += f" delta_y={delta_y}"
+        label += f" tol={tol}"
+        if error:
+            label += f" err={error}"
+        cv2.putText(dbg, label, (10, max(30, int(h*0.03))), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200,200,200), 2, cv2.LINE_AA)
+
+        dbg_path = os.path.join("images", f"debug_age_dual_{int(time.time()*1000)}.png")
+        try:
+            os.makedirs("images", exist_ok=True)
+            cv2.imwrite(dbg_path, dbg)
+            print(f"🖼️  Dual-icon debug overlay: {dbg_path}")
+        except Exception:
+            dbg_path = ""
+
+        return {
+            'found': found,
+            'y': int(y_avg) if y_avg is not None else 0,
+            'method': 'dual_templates',
+            'results': [
+                {
+                    'template': tpls[0],
+                    'found': bool(res1.get('found')),
+                    'y': int(res1.get('y', 0)),
+                    'confidence': float(res1.get('confidence', 0.0)),
+                    'width': int(res1.get('width', 0)),
+                    'height': int(res1.get('height', 0)),
+                },
+                {
+                    'template': tpls[1],
+                    'found': bool(res2.get('found')),
+                    'y': int(res2.get('y', 0)),
+                    'confidence': float(res2.get('confidence', 0.0)),
+                    'width': int(res2.get('width', 0)),
+                    'height': int(res2.get('height', 0)),
+                }
+            ],
+            'delta_y': int(delta_y) if delta_y is not None else None,
+            'tolerance': int(tol),
+            'debug_image_path': dbg_path,
+            'error': error
+        }
+    except Exception as e:
+        print(f"❌ Dual-template age row detection failed: {e}")
+        return {'found': False, 'error': 'exception'}
 
 def infer_carousel_y_by_edges(
     screenshot_path: str,

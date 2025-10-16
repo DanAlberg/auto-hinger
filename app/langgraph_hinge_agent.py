@@ -14,7 +14,7 @@ from functools import wraps
 from helper_functions import (
     connect_device, get_screen_resolution, open_hinge, reset_hinge_app,
     capture_screenshot, tap, tap_with_confidence, swipe,
-    dismiss_keyboard, clear_screenshots_directory, detect_like_button_cv, detect_send_button_cv, detect_comment_field_cv, detect_keyboard_tick_cv, detect_age_icon_cv, detect_age_icon_cv_multi, infer_carousel_y_by_edges, are_images_similar, input_text_robust
+    dismiss_keyboard, clear_screenshots_directory, detect_like_button_cv, detect_send_button_cv, detect_comment_field_cv, detect_keyboard_tick_cv, detect_age_icon_cv, detect_age_icon_cv_multi, detect_age_row_dual_templates, infer_carousel_y_by_edges, are_images_similar, input_text_robust
 )
 from analyzer import (
     extract_text_from_image, analyze_dating_ui,
@@ -131,8 +131,8 @@ def gated_step(func):
 
 class LangGraphHingeAgent:
     """
-    LangGraph-powered Hinge automation agent with Gemini-controlled decision making.
-    Replaces GeminiAgentController with improved workflow management.
+    LangGraph-powered Hinge automation agent with AI-controlled decision making.
+    Replaces agent controller with improved workflow management.
     """
     
     def __init__(self, max_profiles: int = 10, config=None):
@@ -243,7 +243,7 @@ class LangGraphHingeAgent:
                 print(l)
 
     def _build_workflow(self) -> StateGraph:
-        """Build the LangGraph workflow with Gemini-controlled decision making"""
+        """Build the LangGraph workflow with AI-controlled decision making"""
         
         workflow = StateGraph(HingeAgentState)
         
@@ -301,7 +301,7 @@ class LangGraphHingeAgent:
             }
         )
         
-        # Add edges back to Gemini decision node from all action nodes
+        # Add edges back to AI decision node from all action nodes
         action_nodes = [
             "capture_screenshot", "analyze_profile", "scroll_profile", "make_like_decision",
             "detect_like_button", "execute_like", "generate_comment", "send_comment_with_typing", "send_like_without_comment",
@@ -352,6 +352,11 @@ class LangGraphHingeAgent:
     def initialize_session_node(self, state: HingeAgentState) -> HingeAgentState:
         """Initialize the automation session"""
         print("🚀 Initializing LangGraph Hinge automation session...")
+        # Gate CV per-template debug overlays when scrape-only or verbose logging
+        try:
+            os.environ["HINGE_CV_DEBUG_MODE"] = "1" if (getattr(self.config, "scrape_only", False) or getattr(self.config, "verbose_logging", False)) else "0"
+        except Exception:
+            pass
         
         # Clear old screenshots to prevent confusion
         clear_screenshots_directory()
@@ -537,7 +542,7 @@ class LangGraphHingeAgent:
                 except Exception:
                     _sz = "?"
                 self._ai_trace_log([
-                    "AI_CALL call_id=ai_decide_action model=gpt-4o-mini temperature=0.0 response_format=json_object",
+                    "AI_CALL call_id=ai_decide_action model=gpt-5-mini temperature=0.0 response_format=json_object",
                     "PROMPT=<<<BEGIN",
                     *prompt.splitlines(),
                     "<<<END",
@@ -556,18 +561,25 @@ class LangGraphHingeAgent:
                 
                 messages = [{"role": "user", "content": prompt}]
                 self._ai_trace_log([
-                    "AI_CALL call_id=ai_decide_action model=gpt-4o-mini temperature=0.0 response_format=json_object",
+                    "AI_CALL call_id=ai_decide_action model=gpt-5-mini temperature=0.0 response_format=json_object",
                     "PROMPT=<<<BEGIN",
                     *prompt.splitlines(),
                     "<<<END",
                 ])
             
+            t0 = time.perf_counter()
             resp = self.ai_client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-5-mini",
                 response_format={"type": "json_object"},
                 messages=messages,
                 temperature=0.0
             )
+            dt_ms = int((time.perf_counter() - t0) * 1000)
+            try:
+                print(f"[AI] ai_decide_action model=gpt-5-mini duration={dt_ms}ms")
+            except Exception:
+                pass
+            self._ai_trace_log([f"AI_TIME call_id=ai_decide_action model=gpt-5-mini duration_ms={dt_ms}"])
             
             decision = json.loads(resp.choices[0].message.content) if resp.choices[0].message and resp.choices[0].message.content else {}
             next_action = decision.get('next_action', 'capture_screenshot')
@@ -739,14 +751,14 @@ class LangGraphHingeAgent:
             except Exception:
                 _sz = "?"
             self._ai_trace_log([
-                "AI_CALL call_id=extract_user_content_only model=gpt-4o-mini temperature=0.0",
+                "AI_CALL call_id=extract_user_content_only model=gpt-5-mini temperature=0.0",
                 "PROMPT=<<<BEGIN",
                 *prompt.splitlines(),
                 "<<<END",
                 f"IMAGE image_path={screenshot_path} image_size={_sz} bytes"
             ])
             resp = self.ai_client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-5-mini",
                 messages=[{
                     "role": "user",
                     "content": [
@@ -913,19 +925,22 @@ class LangGraphHingeAgent:
             for idx, (top, bottom) in enumerate(stages):
                 thr = max(0.2, base_thr - decay * idx)
                 # Template+edges
-                tpl = detect_age_icon_cv_multi(
+                dual = detect_age_row_dual_templates(
                     img_path,
-                    template_path="assets/age_icon.png",
+                    template_paths=getattr(cfg, "age_icon_templates", ("assets/icon_age_white.png", "assets/icon_gender_white.png")),
                     roi_top=float(top),
                     roi_bottom=float(bottom),
-                    scales=None,
                     threshold=thr,
                     use_edges=bool(getattr(cfg, "age_icon_use_edges", True)),
-                    save_debug=True
+                    save_debug=True,
+                    tolerance_px=int(getattr(cfg, "age_dual_y_tolerance_px", 5)),
+                    tolerance_ratio=float(getattr(cfg, "age_dual_y_tolerance_ratio", 0.005)),
+                    require_both=bool(getattr(cfg, "require_both_icons_for_y", True)),
                 )
-                if tpl.get("found"):
-                    print(f"AGE_DETECT_STAGE_RESULT idx={idx} method=template y={int(tpl['y'])}")
-                    return {"found": True, "y": int(tpl["y"]), "method": f"template(stage={idx},thr={thr:.2f})"}
+                if dual.get("found"):
+                    y_consensus = int(dual.get("y", 0))
+                    print(f"AGE_DETECT_STAGE_RESULT idx={idx} method=dual(avg) y={y_consensus}")
+                    return {"found": True, "y": y_consensus, "method": f"dual(stage={idx},thr={thr:.2f})"}
                 # Edges fallback (row-strength)
                 edge = infer_carousel_y_by_edges(
                     img_path,
@@ -1122,7 +1137,7 @@ class LangGraphHingeAgent:
             # Build messages with all screenshots attached
             content_parts = [{"type": "text", "text": prompt}]
             trace_lines = [
-                "AI_CALL call_id=analyze_complete_profile model=gpt-4o-mini temperature=0.0 response_format=json_object",
+                "AI_CALL call_id=analyze_complete_profile model=gpt-5-mini temperature=0.0 response_format=json_object",
                 "PROMPT=<<<BEGIN",
                 *prompt.splitlines(),
                 "<<<END",
@@ -1139,12 +1154,19 @@ class LangGraphHingeAgent:
                 content_parts.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
             self._ai_trace_log(trace_lines)
             
+            t0 = time.perf_counter()
             resp = self.ai_client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-5-mini",
                 response_format={"type": "json_object"},
                 messages=[{"role": "user", "content": content_parts}],
                 temperature=0.0
             )
+            dt_ms = int((time.perf_counter() - t0) * 1000)
+            try:
+                print(f"[AI] analyze_complete_profile model=gpt-5-mini images={len(screenshots)} duration={dt_ms}ms")
+            except Exception:
+                pass
+            self._ai_trace_log([f"AI_TIME call_id=analyze_complete_profile model=gpt-5-mini images={len(screenshots)} duration_ms={dt_ms}"])
             try:
                 return json.loads(resp.choices[0].message.content or "{}")
             except Exception:
@@ -1164,7 +1186,7 @@ class LangGraphHingeAgent:
         """
         Submit the built OpenAI-compatible payload to the model:
         - Prepend a system message to enforce strict JSON with required keys.
-        - Use gpt-5 by default; reserve gpt-5-mini for small/logical tasks.
+        - Use gpt-5-mini by default; keep gpt-5 for heavy tasks.
         - Retry once with stricter instructions on parse/validation failure.
         """
         messages = payload.get("messages", []) or []
@@ -1188,14 +1210,21 @@ class LangGraphHingeAgent:
             ),
         }
 
-        model = getattr(self.config, "extraction_model", "gpt-5") or "gpt-5"
+        model = getattr(self.config, "extraction_model", "gpt-5-mini") or "gpt-5-mini"
         # First attempt
         def _call(msgs):
+            t0 = time.perf_counter()
             resp = self.ai_client.chat.completions.create(
                 model=model,
                 response_format={"type": "json_object"},
                 messages=msgs,
             )
+            dt_ms = int((time.perf_counter() - t0) * 1000)
+            try:
+                print(f"[AI] submit_batch model={model} messages={len(msgs)} duration={dt_ms}ms")
+            except Exception:
+                pass
+            self._ai_trace_log([f"AI_TIME call_id=submit_batch model={model} messages={len(msgs)} duration_ms={dt_ms}"])
             return json.loads(resp.choices[0].message.content or "{}")
 
         try:
@@ -1480,7 +1509,7 @@ class LangGraphHingeAgent:
             f"like_detection_{state['current_profile_index']}"
         )
         
-        # Use CV-based detection instead of Gemini
+        # Use CV-based detection (no LLM)
         cv_result = detect_like_button_cv(fresh_screenshot)
         
         if not cv_result.get('found'):
@@ -1794,11 +1823,11 @@ class LangGraphHingeAgent:
             
             if not cv_result.get('found'):
                 print("❌ Comment field not found with CV detection")
-                # Fallback to Gemini detection
+                # Fallback to LLM detection
                 comment_ui = detect_comment_ui_elements(fresh_screenshot)
                 
                 if not comment_ui.get('comment_field_found'):
-                    print("❌ Comment field not found with Gemini fallback either")
+                    print("❌ Comment field not found with LLM fallback either")
                     return {
                         **state,
                         "current_screenshot": fresh_screenshot,
@@ -1806,11 +1835,11 @@ class LangGraphHingeAgent:
                         "action_successful": False
                     }
                 
-                # Use Gemini coordinates
+                # Use LLM coordinates
                 comment_x = int(comment_ui['comment_field_x'] * state["width"])
                 comment_y = int(comment_ui['comment_field_y'] * state["height"])
                 confidence = comment_ui.get('comment_field_confidence', 0.8)
-                print(f"🎯 Using Gemini fallback - Tapping comment field at ({comment_x}, {comment_y})")
+                print(f"🎯 Using LLM fallback - Tapping comment field at ({comment_x}, {comment_y})")
             else:
                 # Use CV coordinates
                 comment_x = cv_result['x']
@@ -2511,7 +2540,7 @@ class LangGraphHingeAgent:
         """
         s = state
 
-        # Scrape-only mode: extract full profile and do not like/dislike
+        # Scrape-only mode: extract full profile and stop (no navigation)
         if getattr(self.config, "scrape_only", False):
             s = self.capture_screenshot_node(s)
             if not s.get("action_successful"):
@@ -2519,11 +2548,15 @@ class LangGraphHingeAgent:
             s = self.analyze_profile_node(s)
             if not s.get("action_successful"):
                 return self._fail(s, "Failed to analyze profile (scrape-only)", "analyze_profile")
-            # Optionally navigate to next for continued scraping
-            s_nav = self.navigate_to_next_node(s)
-            if not s_nav.get("action_successful"):
-                return self._fail(s_nav, "Failed to navigate to next profile (scrape-only)", "navigate_to_next")
-            return s_nav
+            # Export the scraped profile and stop
+            try:
+                self._export_profile_row(s, False, s.get("current_screenshot"))
+            except Exception as _e:
+                print(f"⚠️  Export failed (scrape-only): {_e}")
+            s["profiles_processed"] = s.get("profiles_processed", 0) + 1
+            s["should_continue"] = False
+            s["completion_reason"] = "Scrape-only completed"
+            return s
 
         # 1) Capture screenshot
         s = self.capture_screenshot_node(s)

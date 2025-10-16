@@ -1,6 +1,6 @@
 # app/analyzer_openai.py
-# OpenAI-backed implementations that mirror the Gemini analyzer function signatures
-# so existing call sites can be migrated incrementally.
+# OpenAI-backed analyzer implementations (facade-compatible signatures)
+# so existing call sites remain stable.
 
 import os
 import json
@@ -8,6 +8,7 @@ import base64
 from typing import Optional, Dict, Any, List
 from openai import OpenAI
 import config  # ensure .env is loaded at import time
+import time
 
 
 # Initialize OpenAI client (reads OPENAI_API_KEY from environment)
@@ -46,7 +47,7 @@ def _b64_image(image_path: str) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
-def _chat_text(prompt: str, temperature: float = 0.2, model: str = "gpt-4o-mini") -> str:
+def _chat_text(prompt: str, temperature: float = 0.2, model: str = "gpt-5-mini") -> str:
     # AI trace: log the prompt exactly as sent (no images here)
     _ai_trace_log([
         f"AI_CALL call_id=chat_text model={model} temperature={temperature}",
@@ -54,16 +55,23 @@ def _chat_text(prompt: str, temperature: float = 0.2, model: str = "gpt-4o-mini"
         *prompt.splitlines(),
         "<<<END",
     ])
+    t0 = time.perf_counter()
     resp = _client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=temperature,
     )
+    dt_ms = int((time.perf_counter() - t0) * 1000)
+    _ai_trace_log([f"AI_TIME call_id=chat_text model={model} duration_ms={dt_ms}"])
+    try:
+        print(f"[AI] chat_text model={model} duration={dt_ms}ms")
+    except Exception:
+        pass
     content = resp.choices[0].message.content or ""
     return content.strip()
 
 
-def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float = 0.0, model: str = "gpt-4o-mini") -> Dict[str, Any]:
+def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float = 0.0, model: str = "gpt-5-mini") -> Dict[str, Any]:
     messages: List[Dict[str, Any]] = []
     if image_path:
         # AI trace: log prompt and image path + size (never log base64)
@@ -95,12 +103,19 @@ def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float
         ])
         messages.append({"role": "user", "content": prompt})
 
+    t0 = time.perf_counter()
     resp = _client.chat.completions.create(
         model=model,
         response_format={"type": "json_object"},
         messages=messages,
         temperature=temperature,
     )
+    dt_ms = int((time.perf_counter() - t0) * 1000)
+    _ai_trace_log([f"AI_TIME call_id=chat_json model={model} duration_ms={dt_ms}"])
+    try:
+        print(f"[AI] chat_json model={model} duration={dt_ms}ms")
+    except Exception:
+        pass
 
     raw = resp.choices[0].message.content or "{}"
     try:
@@ -139,7 +154,7 @@ def extract_text_from_image(image_path: str) -> str:
     except Exception:
         _sz = "?"
     _ai_trace_log([
-        "AI_CALL call_id=extract_text_from_image model=gpt-4o-mini temperature=0.2",
+        "AI_CALL call_id=extract_text_from_image model=gpt-5-mini temperature=0.2",
         "PROMPT=<<<BEGIN",
         *prompt.splitlines(),
         "<<<END",
@@ -153,11 +168,18 @@ def extract_text_from_image(image_path: str) -> str:
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_b64_image(image_path)}"}}
         ]
     }]
+    t0 = time.perf_counter()
     resp = _client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5-mini",
         messages=messages,
         temperature=0.2
     )
+    dt_ms = int((time.perf_counter() - t0) * 1000)
+    _ai_trace_log([f"AI_TIME call_id=extract_text_from_image model=gpt-5-mini duration_ms={dt_ms}"])
+    try:
+        print(f"[AI] extract_text_from_image model=gpt-5-mini duration={dt_ms}ms")
+    except Exception:
+        pass
     return (resp.choices[0].message.content or "").strip()
 
 
