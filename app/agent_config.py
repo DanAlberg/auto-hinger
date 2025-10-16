@@ -63,6 +63,10 @@ class AgentConfig:
     age_icon_scales: tuple = (0.6, 1.5, 0.1)     # start, end, step for multi-scale matching
     age_icon_threshold: float = 0.55             # normalized threshold for match acceptance
     age_icon_use_edges: bool = True              # use Canny edges during matching
+    age_icon_templates: tuple = ("assets/icon_age_white.png", "assets/icon_gender_white.png")  # templates to use for age-row detection
+    age_dual_y_tolerance_px: int = 5             # absolute pixel tolerance for age/gender Y alignment
+    age_dual_y_tolerance_ratio: float = 0.005    # relative tolerance (fraction of image height)
+    require_both_icons_for_y: bool = True        # require both icons and average their Y when close
 
     carousel_y_roi_top: float = 0.15             # top of ROI for edge-based Y inference
     carousel_y_roi_bottom: float = 0.60          # bottom of ROI for edge-based Y inference
@@ -105,11 +109,11 @@ class AgentConfig:
     manual_log_dir: str = "logs"
 
     # AI tracing
-    ai_trace: bool = False
+    ai_trace: bool = True
     ai_trace_log_dir: str = "logs"
 
     # Extraction models (LLM)
-    extraction_model: str = "gpt-5"       # default to gpt-5 (vision-capable)
+    extraction_model: str = "gpt-5-mini"  # default to gpt-5-mini (fast); keep gpt-5 for heavy tasks
     extraction_small_model: str = "gpt-5-mini"  # for small/logical tasks
     extraction_retry: int = 1
 

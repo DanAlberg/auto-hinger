@@ -17,7 +17,7 @@ What this tool does
 
 Tech Stack
 - Python 3.13+ (dependency management via uv)
-- OpenAI (default model: gpt-4o-mini) for vision + reasoning
+- OpenAI (default model: gpt-5-mini) for vision + reasoning
 - LangGraph for stateful orchestration
 - OpenCV for computer vision (template matching)
 - ADB (Android Debug Bridge) for device automation
@@ -28,13 +28,11 @@ Requirements
 - Android SDK Platform Tools (adb)
 - Python 3.13+
 - uv package manager (recommended)
-- OpenAI API key (default). Gemini support is present behind analyzer components.
+- OpenAI API key
 
 Setup
 1) Create environment file at app/.env:
    OPENAI_API_KEY=your-openai-api-key
-   # Optional if you switch implementations:
-   GEMINI_API_KEY=your-gemini-api-key
 
 2) Install dependencies (from the app/ directory):
    uv sync
@@ -95,7 +93,7 @@ Architecture Overview
 - CV helpers & ADB: app/helper_functions.py
   - detect_like_button_cv, detect_send_button_cv, detect_comment_field_cv; tap/swipe/keyboard helpers; app reset/open.
 - Analyzer facade: app/analyzer.py -> app/analyzer_openai.py (default)
-  - OCR, UI analysis, comment generation, outcome verification; swappable to Gemini analyzer.
+  - OCR, UI analysis, comment generation, outcome verification.
 - Data store: app/data_store.py
   - Generated comment store and optional stats.
 - Assets: app/assets/

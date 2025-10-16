@@ -107,8 +107,8 @@ def get_config(config_name: str, args) -> AgentConfig:
     config.device_ip = args.device_ip
     config.verbose_logging = args.verbose
     config.manual_confirm = args.manual_confirm
-    # Enable AI trace if explicitly requested or when manual confirm mode is on
-    config.ai_trace = args.trace_ai or args.manual_confirm
+    # Enable AI trace: respect default from config, OR enable when flags are provided
+    config.ai_trace = (getattr(config, "ai_trace", False) or args.trace_ai or args.manual_confirm)
 
     # New flags
     config.like_mode = args.like_mode

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 OpenAI-based test script for Hinge automation system.
-Mirrors Gemini test flow but uses the analyzer (OpenAI-backed) facade.
+Mirrors the previous test flow and uses the analyzer (OpenAI-backed) facade.
 """
 
 import os
@@ -27,7 +27,7 @@ def test_openai_connection():
 
         # Simple text generation test
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             messages=[{"role": "user", "content": 'Say "Hello, OpenAI test successful!" if you can read this.'}],
             temperature=0.0,
         )
