@@ -80,7 +80,7 @@ def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float
         except Exception:
             _sz = "?"
         _ai_trace_log([
-            f"AI_CALL call_id=chat_json model={model} temperature={temperature} response_format=json_object",
+            f"AI_CALL call_id=chat_json model={model} response_format=json_object",
             "PROMPT=<<<BEGIN",
             *prompt.splitlines(),
             "<<<END",
@@ -96,7 +96,7 @@ def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float
         })
     else:
         _ai_trace_log([
-            f"AI_CALL call_id=chat_json model={model} temperature={temperature} response_format=json_object",
+            f"AI_CALL call_id=chat_json model={model} response_format=json_object",
             "PROMPT=<<<BEGIN",
             *prompt.splitlines(),
             "<<<END",
@@ -108,7 +108,6 @@ def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float
         model=model,
         response_format={"type": "json_object"},
         messages=messages,
-        temperature=temperature,
     )
     dt_ms = int((time.perf_counter() - t0) * 1000)
     _ai_trace_log([f"AI_TIME call_id=chat_json model={model} duration_ms={dt_ms}"])
@@ -119,17 +118,25 @@ def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float
 
     raw = resp.choices[0].message.content or "{}"
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
     except Exception:
         # Attempt minimal repair if the model returns non-JSON by mistake
         try:
             start = raw.find("{")
             end = raw.rfind("}")
             if start != -1 and end != -1 and end > start:
-                return json.loads(raw[start:end + 1])
+                parsed = json.loads(raw[start:end + 1])
+            else:
+                parsed = {}
         except Exception:
-            pass
-        return {}
+            parsed = {}
+    # Pretty-print the JSON to console for quick review (truncated)
+    try:
+        print("[AI JSON chat_json]")
+        print(json.dumps(parsed, indent=2)[:2000])
+    except Exception:
+        pass
+    return parsed
 
 
 def extract_text_from_image(image_path: str) -> str:

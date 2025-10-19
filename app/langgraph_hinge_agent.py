@@ -571,8 +571,7 @@ class LangGraphHingeAgent:
             resp = self.ai_client.chat.completions.create(
                 model="gpt-5-mini",
                 response_format={"type": "json_object"},
-                messages=messages,
-                temperature=0.0
+                messages=messages
             )
             dt_ms = int((time.perf_counter() - t0) * 1000)
             try:
@@ -765,8 +764,7 @@ class LangGraphHingeAgent:
                         {"type": "text", "text": prompt},
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
                     ]
-                }],
-                temperature=0.0
+                }]
             )
             
             return (resp.choices[0].message.content or "").strip()
@@ -872,6 +870,11 @@ class LangGraphHingeAgent:
                     extraction_failed = True
                 # Normalize to stable schema with nulls/[] defaults; tri-state lifestyle fields
                 extracted_profile = self._normalize_extracted_profile(extracted_raw)
+                try:
+                    print("[AI JSON extracted_profile]")
+                    print(json.dumps(extracted_profile, indent=2)[:2000])
+                except Exception:
+                    pass
             except Exception as _e:
                 print(f"❌ Extraction exception: {_e}")
                 llm_payload = {}
@@ -1158,8 +1161,7 @@ class LangGraphHingeAgent:
             resp = self.ai_client.chat.completions.create(
                 model="gpt-5-mini",
                 response_format={"type": "json_object"},
-                messages=[{"role": "user", "content": content_parts}],
-                temperature=0.0
+                messages=[{"role": "user", "content": content_parts}]
             )
             dt_ms = int((time.perf_counter() - t0) * 1000)
             try:
@@ -1168,7 +1170,13 @@ class LangGraphHingeAgent:
                 pass
             self._ai_trace_log([f"AI_TIME call_id=analyze_complete_profile model=gpt-5-mini images={len(screenshots)} duration_ms={dt_ms}"])
             try:
-                return json.loads(resp.choices[0].message.content or "{}")
+                parsed = json.loads(resp.choices[0].message.content or "{}")
+                try:
+                    print("[AI JSON analyze_complete_profile]")
+                    print(json.dumps(parsed, indent=2)[:2000])
+                except Exception:
+                    pass
+                return parsed
             except Exception:
                 return {}
         except Exception as e:
@@ -2411,6 +2419,74 @@ class LangGraphHingeAgent:
             # Primary sources
             analysis = state.get("profile_analysis", {}) or {}
             extracted = state.get("extracted_profile", {}) or {}
+
+            # New scan-only export (V2): write only scan-derived fields aligned to exporter schema.
+            try:
+                schema = list(getattr(self.exporter, "schema", [])) or []
+                pets = (extracted.get("pets", {}) or {}) if isinstance(extracted, dict) else {}
+
+                def _b(v):
+                    # Map boolean/None to Excel-friendly 1/0/""
+                    return 1 if v is True else 0 if v is False else ""
+
+                languages_spoken = ", ".join([str(x) for x in (extracted.get("languages_spoken") or []) if x])
+                interests = ", ".join([str(x) for x in (extracted.get("interests") or []) if x])
+                prompts = " | ".join([
+                    f"{(pa.get('prompt') or '').strip()}: {(pa.get('answer') or '').strip()}"
+                    for pa in (extracted.get("prompts_and_answers") or [])
+                    if isinstance(pa, dict)
+                ])
+
+                row_v2 = {
+                    # Identity
+                    "name": extracted.get("name"),
+                    "age": extracted.get("age"),
+                    "height": extracted.get("height"),
+                    "location": extracted.get("location"),
+                    # Profile
+                    "sexuality": extracted.get("sexuality"),
+                    "ethnicity": extracted.get("ethnicity"),
+                    "current_children": extracted.get("current_children"),
+                    "family_plans": extracted.get("family_plans"),
+                    "covid_vaccine": extracted.get("covid_vaccine"),
+                    "zodiac_sign": extracted.get("zodiac_sign"),
+                    "hometown": extracted.get("hometown"),
+                    # Education / work / beliefs
+                    "university": extracted.get("university"),
+                    "job_title": extracted.get("job_title"),
+                    "work": extracted.get("work"),
+                    "religious_beliefs": extracted.get("religious_beliefs"),
+                    # Politics / languages / relationship
+                    "politics": extracted.get("politics"),
+                    "languages_spoken": languages_spoken,
+                    "dating_intentions": extracted.get("dating_intentions"),
+                    "relationship_type": extracted.get("relationship_type"),
+                    # Lifestyle (tri-state)
+                    "drinking": extracted.get("drinking"),
+                    "smoking": extracted.get("smoking"),
+                    "marijuana": extracted.get("marijuana"),
+                    "drugs": extracted.get("drugs"),
+                    # Pets
+                    "pets_dog": _b(pets.get("dog")),
+                    "pets_cat": _b(pets.get("cat")),
+                    "pets_bird": _b(pets.get("bird")),
+                    "pets_fish": _b(pets.get("fish")),
+                    "pets_reptile": _b(pets.get("reptile")),
+                    # Content
+                    "bio": extracted.get("bio"),
+                    "prompts_and_answers": prompts,
+                    "interests": interests,
+                    "summary": extracted.get("summary") or "",
+                }
+
+                # If schema is defined, restrict to schema keys only (order preserved by ProfileExporter)
+                if schema:
+                    row_v2 = {k: row_v2.get(k, "") for k in schema}
+
+                self.exporter.append_row(row_v2)
+                return
+            except Exception as _v2e:
+                print(f"⚠️  Export V2 path failed, falling back to legacy row build: {_v2e}")
 
             # Helpers
             def _get_ana(key, default=""):
