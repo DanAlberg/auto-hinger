@@ -63,8 +63,14 @@ def build_profile_prompt() -> str:
     Guidance:
     - REQUIRED KEYS: name, age, height, location MUST be present at top-level; set to null if not visible.
     - All other fields are optional and may be null if not visible.
-    - Use only explicit on-screen text/chips/labels; if uncertain, set the field to null.
-    - For lifestyle fields, do not assume: if not shown, set null; otherwise map to exactly "Yes", "Sometimes", or "No".
+    - Use only explicit on-screen text, chips, or labels. If uncertain, set the field to null.
+    - Lifestyle icons mapping (treat these specific UI icons/chips as valid signals when visibly selected):
+      • wine glass = drinking
+      • cigarette = smoking
+      • leaf = marijuana
+      • pill = drugs
+      If a lifestyle chip/icon is present and clearly selected but no frequency text is shown, set "Yes".
+      If frequency text is shown (e.g., "Socially", "Sometimes"), map to exactly "Yes", "Sometimes", or "No". If not visible, set null.
     - For family_plans and politics, restrict to the enumerations above; if not shown, set null.
     - "work" is the company name only if explicitly shown; if absent, set null (do not reuse job_title).
     - Output ONLY a valid JSON object with no commentary, preamble, markdown, or code fences.
