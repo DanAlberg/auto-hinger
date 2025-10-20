@@ -10,7 +10,7 @@ dependencies = [
     "langchain-google-genai>=2.1.9",
     "langgraph>=0.5.1",
     "numpy>=2.2.6",
-    "opencv-python>=4.11.0.86",
+    "opencv-python-headless>=4.11.0.86",
     "pillow>=11.3.0",
     "pure-python-adb>=0.3.0.dev0",
     "pydantic>=2.11.7",
@@ -19,4 +19,5 @@ dependencies = [
     "pandas>=2.2.0",
     "openpyxl>=3.1.2",
     "xlwings>=0.30.0",
+    "pytesseract>=0.3.10",
 ]
