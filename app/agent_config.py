@@ -48,7 +48,7 @@ class AgentConfig:
     # Scroll settings
     max_scroll_attempts: int = 3
     scroll_distance_factor: float = 0.3  # how far to scroll
-    vertical_swipe_x_pct: float = 0.12   # use leftmost ~12% of screen for all vertical swipes (poll-safe)
+    vertical_swipe_x_pct: float = 0.20   # use ~20% of screen (move off extreme edge for better scroll classification)
     vertical_swipe_duration_ms: int = 600    # faster scroll (2x speed); still long enough to classify as scroll, not tap
     vertical_swipe_x_jitter_px: int = 3      # tiny horizontal jitter to avoid stationary-tap interpretation
     vertical_swipe_bottom_guard_pct: float = 0.90  # never place swipe endpoints below bottom 10% (avoid X button)
@@ -58,6 +58,19 @@ class AgentConfig:
     content_stable_repeats: int = 2
     horizontal_swipe_dx: tuple = (0.77, 0.23)  # start_x_percent, end_x_percent (10% shorter vs center)
     horizontal_swipe_duration_ms: int = 300    # faster horizontal swipe (2x speed)
+    
+    # CV+OCR biometrics extraction (horizontal row)
+    use_cv_ocr_biometrics: bool = True
+    cv_ocr_engine: str = "easyocr"  # "easyocr" | "tesseract"
+    cv_band_height_ratio: float = 0.06
+    cv_micro_swipe_ratio: float = 0.25
+    cv_seek_swipe_ratio: float = 0.60
+    cv_target_center_x_ratio: float = 0.38
+    verbose_cv_timing: bool = True
+    ignore_zodiac: bool = True  # only store zodiac_listed boolean
+
+    # LLM payload selection
+    llm_exclude_horizontal: bool = True  # exclude horizontal carousel frames from LLM payload
     
     # Age icon detection & carousel Y inference
     age_icon_roi: tuple = (0.1, 0.9)            # search age icon within this vertical ROI (top..bottom)
@@ -98,7 +111,7 @@ class AgentConfig:
     # Horizontal carousel-specific stabilization (overrides when present)
     hscroll_hash_threshold: int = 1              # stricter Hamming distance for horizontal carousel dedup
     hscroll_stable_repeats: int = 1              # stop after 1 duplicate frame on horizontal carousel
-    hscroll_hash_roi_ratio: float = 0.12         # vertical band height (fraction of screen height) used for horizontal aHash ROI
+    hscroll_hash_roi_ratio: float = 0.04         # narrow vertical band (~4%) for horizontal aHash ROI (markers strip)
 
     max_vertical_pages: int = 10                 # vertical pages cap before giving up
     
@@ -129,6 +142,7 @@ class AgentConfig:
     extraction_model: str = "gpt-5-mini"  # default to gpt-5-mini (fast); keep gpt-5 for heavy tasks
     extraction_small_model: str = "gpt-5-mini"  # for small/logical tasks
     extraction_retry: int = 1
+    llm_max_images: int = 10  # hard cap for LLM image submissions
 
     # Testing and typing verification
     dry_run: bool = False  # when True, never send likes/comments (skips Send taps)
