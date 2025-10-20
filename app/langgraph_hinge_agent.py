@@ -827,15 +827,17 @@ class LangGraphHingeAgent:
             post_full_scroll = capture_screenshot(device, f"profile_{state['current_profile_index']}_post_full_scroll")
             all_screenshots.append(post_full_scroll)
             
-            # Detect age icon Y for horizontal carousel with adaptive peek-scan
-            seek = self._find_carousel_y_with_vertical_scan(state, start_image=post_full_scroll)
-            if seek.get("found"):
-                y_horizontal = int(seek["y"])
-                pages = seek.get("pages_scanned", 0)
-                method = seek.get("method", "unknown")
-                print(f"✅ Carousel Y determined at {y_horizontal} (method={method}, peek_pages={pages})")
+            # Detect age icon Y for horizontal carousel:
+            # Try early frames first (pre-scroll), then post_full_scroll (each with its own adaptive seek)
+            print(f"SWEEP_START image={os.path.basename(post_full_scroll)}")
+            sweep = self._sweep_icons_find_y(state, start_image=post_full_scroll)
+            if sweep.get("found"):
+                y_horizontal = int(sweep["y"])
+                pages = int(sweep.get("pages_scanned", 0))
+                img_used = sweep.get("image_used", "")
+                print(f"✅ Carousel Y determined at {y_horizontal} (method={sweep.get('method','sweep_dual')}, pages_scanned={pages}, image_used={os.path.basename(img_used) if img_used else ''})")
             else:
-                print("❌ Could not determine horizontal carousel Y after adaptive seek.")
+                print("❌ Could not determine horizontal carousel Y after sweep (high-threshold dual-template).")
                 return {
                     **state,
                     "last_action": "analyze_profile",
@@ -939,21 +941,27 @@ class LangGraphHingeAgent:
                     tolerance_px=int(getattr(cfg, "age_dual_y_tolerance_px", 5)),
                     tolerance_ratio=float(getattr(cfg, "age_dual_y_tolerance_ratio", 0.005)),
                     require_both=bool(getattr(cfg, "require_both_icons_for_y", True)),
+                    expected_px=int(getattr(cfg, "icon_expected_px", 60)),
+                    scale_tolerance=float(getattr(cfg, "icon_scale_tolerance", 0.30)),
+                    min_px=int(getattr(cfg, "icon_min_px", 20)),
+                    max_roi_frac=float(getattr(cfg, "icon_max_roi_frac", 0.12)),
+                    edges_dilate_iter=int(getattr(cfg, "edges_dilate_iter", 1)),
                 )
                 if dual.get("found"):
                     y_consensus = int(dual.get("y", 0))
                     print(f"AGE_DETECT_STAGE_RESULT idx={idx} method=dual(avg) y={y_consensus}")
                     return {"found": True, "y": y_consensus, "method": f"dual(stage={idx},thr={thr:.2f})"}
-                # Edges fallback (row-strength)
-                edge = infer_carousel_y_by_edges(
-                    img_path,
-                    roi_top=float(getattr(cfg, "carousel_y_roi_top", top)),
-                    roi_bottom=float(getattr(cfg, "carousel_y_roi_bottom", bottom)),
-                    smooth_kernel=int(getattr(cfg, "carousel_y_smooth_kernel", 21))
-                )
-                if edge.get("found"):
-                    print(f"AGE_DETECT_STAGE_RESULT idx={idx} method=edges y={int(edge['y'])}")
-                    return {"found": True, "y": int(edge["y"]), "method": f"edges(stage={idx})"}
+                # Edges fallback (row-strength) - optionally disabled when icons are required
+                if not bool(getattr(cfg, "require_icon_detection_for_y", True)):
+                    edge = infer_carousel_y_by_edges(
+                        img_path,
+                        roi_top=float(getattr(cfg, "carousel_y_roi_top", top)),
+                        roi_bottom=float(getattr(cfg, "carousel_y_roi_bottom", bottom)),
+                        smooth_kernel=int(getattr(cfg, "carousel_y_smooth_kernel", 21))
+                    )
+                    if edge.get("found"):
+                        print(f"AGE_DETECT_STAGE_RESULT idx={idx} method=edges y={int(edge['y'])}")
+                        return {"found": True, "y": int(edge["y"]), "method": f"edges(stage={idx})"}
                 print(f"AGE_DETECT_STAGE_RESULT idx={idx} method=none found=False")
             return {"found": False}
 
@@ -997,6 +1005,113 @@ class LangGraphHingeAgent:
                 return res
 
         return {"found": False, "pages_scanned": pages, "method": "not_found"}
+
+    def _sweep_icons_find_y(self, state: HingeAgentState, start_image: str) -> Dict[str, Any]:
+        """ Sequential sweep to locate the age/gender icon row:
+        - Start at the provided frame, try dual-template detection with a high threshold.
+        - If not found, scroll one page, capture the next frame, and retry.
+        - Stop when found, after max_icon_sweep_pages, or when frames stabilize (bottom reached).
+        Returns: {"found": bool, "y": int, "pages_scanned": int, "image_used": str, "method": "sweep_dual"} """
+        device = state["device"]
+        width = state["width"]
+        height = state["height"]
+        cfg = self.config
+
+        templates = getattr(cfg, "age_icon_templates", ("assets/icon_age_white.png", "assets/icon_gender_white.png"))
+        roi_top, roi_bottom = tuple(getattr(cfg, "age_icon_roi", (0.1, 0.9)))
+        thr = float(getattr(cfg, "icon_high_threshold", 0.80))
+        thr_low = max(0.70, thr - 0.10)
+        use_edges = bool(getattr(cfg, "age_icon_use_edges", True))
+        tol_px = int(getattr(cfg, "age_dual_y_tolerance_px", 5))
+        tol_ratio = float(getattr(cfg, "age_dual_y_tolerance_ratio", 0.005))
+        expected_px = int(getattr(cfg, "icon_expected_px", 60))
+        scale_tol = float(getattr(cfg, "icon_scale_tolerance", 0.30))
+        min_px = int(getattr(cfg, "icon_min_px", 20))
+        max_roi_frac = float(getattr(cfg, "icon_max_roi_frac", 0.12))
+        edges_dilate_iter = int(getattr(cfg, "edges_dilate_iter", 1))
+        max_pages = int(getattr(cfg, "max_icon_sweep_pages", 8))
+
+        hash_size = int(getattr(cfg, "image_hash_size", 8))
+        hash_thresh = int(getattr(cfg, "image_hash_threshold", 5))
+        stable_needed = int(getattr(cfg, "image_stable_repeats", getattr(cfg, "content_stable_repeats", 2)))
+
+        current_path = start_image
+        pages = 0
+        stable = 0
+        last_kept = None
+
+        def detect_on(path: str) -> Dict[str, Any]:
+            return detect_age_row_dual_templates(
+                path,
+                template_paths=templates,
+                roi_top=float(roi_top),
+                roi_bottom=float(roi_bottom),
+                threshold=thr,
+                use_edges=use_edges,
+                save_debug=True,
+                tolerance_px=tol_px,
+                tolerance_ratio=tol_ratio,
+                require_both=True,
+                expected_px=expected_px,
+                scale_tolerance=scale_tol,
+                min_px=min_px,
+                max_roi_frac=max_roi_frac,
+                edges_dilate_iter=edges_dilate_iter,
+            )
+
+        while True:
+            dual = detect_on(current_path)
+            if not dual.get("found") and thr_low < thr:
+                dual_low = detect_age_row_dual_templates(
+                    current_path,
+                    template_paths=templates,
+                    roi_top=float(roi_top),
+                    roi_bottom=float(roi_bottom),
+                    threshold=thr_low,
+                    use_edges=use_edges,
+                    save_debug=True,
+                    tolerance_px=tol_px,
+                    tolerance_ratio=tol_ratio,
+                    require_both=True,
+                    expected_px=expected_px,
+                    scale_tolerance=scale_tol,
+                    min_px=min_px,
+                    max_roi_frac=max_roi_frac,
+                    edges_dilate_iter=edges_dilate_iter,
+                )
+                if dual_low.get("found"):
+                    dual = dual_low
+            if dual.get("found"):
+                return {
+                    "found": True,
+                    "y": int(dual.get("y", 0)),
+                    "pages_scanned": pages,
+                    "image_used": current_path,
+                    "method": "sweep_dual",
+                }
+
+            if pages >= max_pages:
+                break
+
+            sx = int(width * float(getattr(cfg, "vertical_swipe_x_pct", 0.12)))
+            sy1 = int(height * 0.80)
+            sy2 = int(height * 0.20)
+            self._vertical_swipe_px(state, sx, sy1, sy2, duration_ms=int(getattr(cfg, "vertical_swipe_duration_ms", 1200)))
+            time.sleep(1.6)
+            shot = capture_screenshot(device, f"icon_sweep_{state['current_profile_index']}_{pages+1}")
+
+            if last_kept is None or not are_images_similar(shot, last_kept, hash_size=hash_size, threshold=hash_thresh):
+                last_kept = shot
+                stable = 0
+            else:
+                stable += 1
+                if stable >= stable_needed:
+                    break
+
+            current_path = shot
+            pages += 1
+
+        return {"found": False, "pages_scanned": pages, "method": "sweep_not_found"}
 
     def _vertical_swipe_px(self, state: HingeAgentState, x: int, y1: int, y2: int, duration_ms: int = 1200) -> None:
         """Vertical swipe with controlled duration and tiny x jitter to encourage scroll classification (not tap)."""

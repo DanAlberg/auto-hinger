@@ -8,6 +8,10 @@ This uses OpenAI to intelligently select and execute tools for dating app automa
 import asyncio
 import argparse
 from typing import Dict, Any
+import time
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 
 from langgraph_hinge_agent import LangGraphHingeAgent
 from agent_config import AgentConfig, DEFAULT_CONFIG, FAST_CONFIG
@@ -180,7 +184,42 @@ async def main():
         # Run automation
         print("🎬 Starting LangGraph-powered automation workflow...")
         print("🧠 LangGraph + OpenAI will manage state and intelligently route actions...")
+
+        # Timing start
+        app_dir = Path(__file__).parent
+        images_dir = app_dir / "images"
+        logs_dir = app_dir / "logs"
+        excel_path = app_dir.parent / "profiles.xlsx"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        started_at_dt = datetime.now(timezone.utc)
+        start_perf = time.perf_counter()
+
         result = agent.run_automation()
+
+        # Timing end and summary
+        ended_at_dt = datetime.now(timezone.utc)
+        duration_seconds = round(time.perf_counter() - start_perf, 3)
+        mode = "scrape_only" if getattr(config, "scrape_only", False) else ("dry_run" if getattr(config, "dry_run", False) else "default")
+        summary = {
+            "started_at": started_at_dt.isoformat(),
+            "ended_at": ended_at_dt.isoformat(),
+            "duration_seconds": duration_seconds,
+            "mode": mode,
+            "profiles_requested": config.max_profiles,
+            "profiles_processed": result.get("profiles_processed") if isinstance(result, dict) else None,
+            "images_dir": images_dir.as_posix(),
+            "logs_dir": logs_dir.as_posix(),
+            "excel_path": excel_path.as_posix(),
+            "exit_status": "success"
+        }
+        ts = started_at_dt.strftime("%Y%m%d_%H%M%S")
+        summary_path = logs_dir / f"run_summary_{ts}.json"
+        with summary_path.open("w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+
+        # Human-readable and machine-readable summaries
+        print(f'RUN SUMMARY: duration={duration_seconds}s, mode={mode}, profiles={config.max_profiles}, images={images_dir.as_posix()}, logs={logs_dir.as_posix()}, excel={excel_path.as_posix()}')
+        print("[RUN SUMMARY] " + json.dumps(summary, ensure_ascii=False))
         
         # Print summary
         print_session_summary(result)

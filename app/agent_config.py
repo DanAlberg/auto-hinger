@@ -59,17 +59,25 @@ class AgentConfig:
     horizontal_swipe_dx: tuple = (0.80, 0.20)  # start_x_percent, end_x_percent
     
     # Age icon detection & carousel Y inference
-    age_icon_roi: tuple = (0.0, 0.55)            # search age icon within this vertical ROI (top..bottom)
+    age_icon_roi: tuple = (0.1, 0.9)            # search age icon within this vertical ROI (top..bottom)
     age_icon_scales: tuple = (0.6, 1.5, 0.1)     # start, end, step for multi-scale matching
-    age_icon_threshold: float = 0.55             # normalized threshold for match acceptance
+    age_icon_threshold: float = 0.42             # normalized threshold for match acceptance
     age_icon_use_edges: bool = True              # use Canny edges during matching
     age_icon_templates: tuple = ("assets/icon_age_white.png", "assets/icon_gender_white.png")  # templates to use for age-row detection
     age_dual_y_tolerance_px: int = 5             # absolute pixel tolerance for age/gender Y alignment
     age_dual_y_tolerance_ratio: float = 0.005    # relative tolerance (fraction of image height)
     require_both_icons_for_y: bool = True        # require both icons and average their Y when close
+    icon_expected_px: int = 60               # expected on-screen icon height in pixels
+    icon_scale_tolerance: float = 0.30       # +/- percentage around expected scale
+    icon_min_px: int = 20                    # minimum scaled template height in pixels
+    icon_max_roi_frac: float = 0.12          # max scaled template height as fraction of ROI height
+    edges_dilate_iter: int = 1               # dilation iterations for edges match
+    require_icon_detection_for_y: bool = True  # if True, do not fall back to edge-only Y inference
+    icon_high_threshold: float = 0.80          # high-confidence threshold for sweep detection
+    max_icon_sweep_pages: int = 8              # max pages to scroll during icon sweep before giving up
 
-    carousel_y_roi_top: float = 0.15             # top of ROI for edge-based Y inference
-    carousel_y_roi_bottom: float = 0.60          # bottom of ROI for edge-based Y inference
+    carousel_y_roi_top: float = 0.10             # top of ROI for edge-based Y inference
+    carousel_y_roi_bottom: float = 0.90          # bottom of ROI for edge-based Y inference
     carousel_y_smooth_kernel: int = 21           # smoothing kernel for row-strength profiling
 
     # Carousel vertical seek scanning options
@@ -77,9 +85,7 @@ class AgentConfig:
     carousel_scan_step: tuple = (0.72, 0.48)                    # peek swipe: start_y_pct -> end_y_pct
     carousel_restore_after_seek: bool = True                    # restore viewport after successful seek
     carousel_detection_roi_stages: tuple = (                    # progressive ROIs for detection
-        (0.0, 0.55),
-        (0.0, 0.75),
-        (0.0, 0.90),
+        (0.1, 0.9),
     )
     carousel_detection_threshold_decay: float = 0.05            # lower template threshold per stage
 
