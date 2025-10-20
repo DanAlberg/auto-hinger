@@ -14,7 +14,7 @@ from functools import wraps
 from helper_functions import (
     connect_device, get_screen_resolution, open_hinge, reset_hinge_app,
     capture_screenshot, tap, tap_with_confidence, swipe,
-    dismiss_keyboard, clear_screenshots_directory, detect_like_button_cv, detect_send_button_cv, detect_comment_field_cv, detect_keyboard_tick_cv, detect_age_icon_cv, detect_age_icon_cv_multi, detect_age_row_dual_templates, infer_carousel_y_by_edges, are_images_similar, input_text_robust
+    dismiss_keyboard, clear_screenshots_directory, detect_like_button_cv, detect_send_button_cv, detect_comment_field_cv, detect_keyboard_tick_cv, detect_age_icon_cv, detect_age_icon_cv_multi, detect_age_row_dual_templates, infer_carousel_y_by_edges, are_images_similar, are_images_similar_roi, input_text_robust
 )
 from analyzer import (
     extract_text_from_image, analyze_dating_ui,
@@ -820,8 +820,8 @@ class LangGraphHingeAgent:
             
             # Full vertical settle scroll (~3/4 screen) to reduce lazy-load jitter without overshooting
             sx = int(width * float(getattr(self.config, "vertical_swipe_x_pct", 0.12)))
-            y1 = int(height * 0.75)
-            y2 = int(height * 0.35)
+            y1 = int(height * 0.77)
+            y2 = int(height * 0.33)
             self._vertical_swipe_px(state, sx, y1, y2, duration_ms=int(getattr(self.config, "vertical_swipe_duration_ms", 1200)))
             time.sleep(2)
             post_full_scroll = capture_screenshot(device, f"profile_{state['current_profile_index']}_post_full_scroll")
@@ -932,7 +932,7 @@ class LangGraphHingeAgent:
                 # Template+edges
                 dual = detect_age_row_dual_templates(
                     img_path,
-                    template_paths=getattr(cfg, "age_icon_templates", ("assets/icon_age_white.png", "assets/icon_gender_white.png")),
+                    template_paths=getattr(cfg, "age_icon_templates", ("assets/icon_age.png", "assets/icon_gender.png", "assets/icon_height.png")),
                     roi_top=float(top),
                     roi_bottom=float(bottom),
                     threshold=thr,
@@ -1017,7 +1017,7 @@ class LangGraphHingeAgent:
         height = state["height"]
         cfg = self.config
 
-        templates = getattr(cfg, "age_icon_templates", ("assets/icon_age_white.png", "assets/icon_gender_white.png"))
+        templates = getattr(cfg, "age_icon_templates", ("assets/icon_age.png", "assets/icon_gender.png", "assets/icon_height.png"))
         roi_top, roi_bottom = tuple(getattr(cfg, "age_icon_roi", (0.1, 0.9)))
         thr = float(getattr(cfg, "icon_high_threshold", 0.80))
         thr_low = max(0.70, thr - 0.10)
@@ -1140,23 +1140,29 @@ class LangGraphHingeAgent:
         start_p, end_p = getattr(cfg, "horizontal_swipe_dx", (0.80, 0.20))
         x1 = int(width * start_p)
         x2 = int(width * end_p)
-        stable_needed = int(getattr(cfg, "image_stable_repeats", getattr(cfg, "content_stable_repeats", 2)))
+        stable_needed = int(getattr(cfg, "hscroll_stable_repeats", getattr(cfg, "image_stable_repeats", getattr(cfg, "content_stable_repeats", 2))))
         max_swipes = int(getattr(cfg, "max_horizontal_swipes", 8))
         hash_size = int(getattr(cfg, "image_hash_size", 8))
-        hash_thresh = int(getattr(cfg, "image_hash_threshold", 5))
+        hash_thresh = int(getattr(cfg, "hscroll_hash_threshold", getattr(cfg, "image_hash_threshold", 5)))
+        band_ratio = float(getattr(cfg, "hscroll_hash_roi_ratio", 0.12))
+        horizontal_ms = int(getattr(cfg, "horizontal_swipe_duration_ms", 600))
         
-        print(f"HSWIPE_SETUP x1={x1} x2={x2} y={y_coord} duration=600ms")
+        print(f"HSWIPE_SETUP x1={x1} x2={x2} y={y_coord} duration={horizontal_ms}ms")
+        try:
+            print(f"HSWIPE_PARAMS hash_threshold={hash_thresh} stable_needed={stable_needed} hash_size={hash_size} band_ratio={band_ratio}")
+        except Exception:
+            pass
         unique_shots: list[str] = []
         stable = 0
         last_kept: str | None = None
         
         for i in range(1, max_swipes + 1):
-            print(f"HSWIPE_DO i={i}/{max_swipes} x1={x1} x2={x2} y={y_coord} duration=600ms")
-            swipe(device, x1, y_coord, x2, y_coord, duration=600)
+            print(f"HSWIPE_DO i={i}/{max_swipes} x1={x1} x2={x2} y={y_coord} duration={horizontal_ms}ms")
+            swipe(device, x1, y_coord, x2, y_coord, duration=horizontal_ms)
             time.sleep(2)
             shot = capture_screenshot(device, f"profile_{state['current_profile_index']}_hscroll_{i}")
             
-            if last_kept is None or not are_images_similar(shot, last_kept, hash_size=hash_size, threshold=hash_thresh):
+            if last_kept is None or not are_images_similar_roi(shot, last_kept, y_coord, band_ratio=band_ratio, hash_size=hash_size, threshold=hash_thresh):
                 unique_shots.append(shot)
                 last_kept = shot
                 stable = 0
@@ -1189,8 +1195,8 @@ class LangGraphHingeAgent:
         for i in range(1, max_pages + 1):
             print(f"📜 Vertical page {i}/{max_pages}")
             sx = int(width * float(getattr(self.config, "vertical_swipe_x_pct", 0.12)))
-            sy1 = int(height * 0.80)
-            sy2 = int(height * 0.20)
+            sy1 = int(height * 0.83)
+            sy2 = int(height * 0.17)
             self._vertical_swipe_px(state, sx, sy1, sy2, duration_ms=int(getattr(self.config, "vertical_swipe_duration_ms", 1200)))
             time.sleep(2)
             shot = capture_screenshot(device, f"profile_{state['current_profile_index']}_vpage_{i}")

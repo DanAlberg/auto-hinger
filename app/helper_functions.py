@@ -663,7 +663,7 @@ def detect_keyboard_tick_cv(screenshot_path, template_path="assets/tick.png"):
         return {'found': False, 'confidence': 0.0}
 
 
-def detect_age_icon_cv(screenshot_path, template_path="assets/icon_age_white.png"):
+def detect_age_icon_cv(screenshot_path, template_path="assets/icon_age.png"):
     """
     Detect the profile 'age' icon using OpenCV template matching to infer the Y
     coordinate of the horizontal photo scroller.
@@ -736,7 +736,7 @@ def detect_age_icon_cv(screenshot_path, template_path="assets/icon_age_white.png
 
 def detect_age_icon_cv_multi(
     screenshot_path: str,
-    template_path: Union[str, Sequence[str]] = "assets/icon_age_white.png",
+    template_path: Union[str, Sequence[str]] = "assets/icon_age.png",
     roi_top: float = 0.0,
     roi_bottom: float = 0.55,
     scales: list = None,
@@ -1049,6 +1049,131 @@ def detect_age_row_dual_templates(
     """
     try:
         tpls = list(template_paths or [])
+        # New: if 3+ templates are provided, perform 2-of-3 consensus (age/gender/height)
+        if len(tpls) >= 3:
+            try:
+                img = cv2.imread(screenshot_path, cv2.IMREAD_COLOR)
+                if img is None:
+                    return {'found': False, 'error': 'load_image_failed'}
+                h, w = img.shape[:2]
+                tol = max(int(tolerance_px), int(h * float(tolerance_ratio)))
+                # Detect each template independently
+                labels = []
+                for p in tpls:
+                    name = os.path.basename(p).lower()
+                    if 'height' in name:
+                        labels.append('height')
+                    elif 'gender' in name:
+                        labels.append('gender')
+                    else:
+                        labels.append('age')
+                results = []
+                for i, p in enumerate(tpls):
+                    lbl = labels[i] if i < len(labels) else 'age'
+                    res = detect_age_icon_cv_multi(
+                        screenshot_path,
+                        template_path=p,
+                        roi_top=roi_top,
+                        roi_bottom=roi_bottom,
+                        threshold=threshold,
+                        use_edges=use_edges,
+                        save_debug=False,
+                        label=lbl,
+                        expected_px=expected_px,
+                        scale_tolerance=scale_tolerance,
+                        min_px=min_px,
+                        max_roi_frac=max_roi_frac,
+                        edges_dilate_iter=edges_dilate_iter
+                    )
+                    res['template'] = p
+                    res['label'] = lbl
+                    results.append(res)
+                # Filter valid detections
+                valids = [r for r in results if r.get('found')]
+                # Build best 2-of-3 (or 3/3) consensus
+                y_avg = None
+                chosen = []
+                if len(valids) >= 2:
+                    # Evaluate all pairs within tolerance and choose highest combined confidence
+                    best_pair = None
+                    best_score = -1.0
+                    for i in range(len(valids)):
+                        for j in range(i+1, len(valids)):
+                            y1 = int(valids[i].get('y', 0))
+                            y2 = int(valids[j].get('y', 0))
+                            dy = abs(y1 - y2)
+                            if dy <= tol:
+                                score = float(valids[i].get('confidence', 0.0)) + float(valids[j].get('confidence', 0.0))
+                                if score > best_score:
+                                    best_score = score
+                                    best_pair = (valids[i], valids[j])
+                    if best_pair:
+                        y1 = int(best_pair[0].get('y', 0))
+                        y2 = int(best_pair[1].get('y', 0))
+                        y_avg = int(round((y1 + y2) / 2))
+                        chosen = [best_pair[0], best_pair[1]]
+                        # If a third valid within tolerance of y_avg, include it in average
+                        for r in valids:
+                            if r in chosen:
+                                continue
+                            if abs(int(r.get('y', 0)) - y_avg) <= tol:
+                                chosen.append(r)
+                                y_avg = int(round((y_avg * (len(chosen)-1) + int(r.get('y',0))) / len(chosen)))
+                found = y_avg is not None
+                # Build composite overlay
+                dbg = img.copy()
+                colors = {
+                    'age': (0, 255, 0),
+                    'gender': (255, 0, 0),
+                    'height': (0, 165, 255)
+                }
+                for r in results:
+                    if r.get('width', 0) > 0 and r.get('height', 0) > 0:
+                        tl = (int(r.get('top_left_x', 0)), int(r.get('top_left_y', 0)))
+                        br = (tl[0] + int(r.get('width', 0)), tl[1] + int(r.get('height', 0)))
+                        col = colors.get(r.get('label', 'age'), (200, 200, 200))
+                        cv2.rectangle(dbg, tl, br, col, 3)
+                        try:
+                            cv2.line(dbg, (0, int(r.get('y', 0))), (w, int(r.get('y', 0))), col, 2)
+                        except Exception:
+                            pass
+                        try:
+                            cv2.putText(dbg, f"{os.path.basename(r.get('template',''))} conf={float(r.get('confidence',0.0)):.2f}",
+                                        (tl[0], max(0, tl[1]-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
+                        except Exception:
+                            pass
+                if y_avg is not None:
+                    cv2.line(dbg, (0, y_avg), (w, y_avg), (255, 0, 255), 2)
+                label = f"found={found} min2of3 tol={tol}"
+                cv2.putText(dbg, label, (10, max(30, int(h*0.03))), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200,200,200), 2, cv2.LINE_AA)
+                dbg_path = os.path.join("images", f"debug_age_two_of_three_{int(time.time()*1000)}.png")
+                try:
+                    os.makedirs("images", exist_ok=True)
+                    cv2.imwrite(dbg_path, dbg)
+                except Exception:
+                    dbg_path = ""
+                return {
+                    'found': bool(found),
+                    'y': int(y_avg) if y_avg is not None else 0,
+                    'method': 'two_of_three',
+                    'results': [
+                        {
+                            'template': r.get('template'),
+                            'found': bool(r.get('found')),
+                            'y': int(r.get('y', 0)),
+                            'confidence': float(r.get('confidence', 0.0)),
+                            'width': int(r.get('width', 0)),
+                            'height': int(r.get('height', 0)),
+                        } for r in results
+                    ],
+                    'delta_y': None,
+                    'tolerance': int(tol),
+                    'debug_image_path': dbg_path,
+                    'error': None if found else 'insufficient_matches'
+                }
+            except Exception as _e:
+                print(f"❌ Two-of-three age row detection failed: {_e}")
+                return {'found': False, 'error': 'exception'}
         if len(tpls) < 2:
             single = detect_age_icon_cv_multi(
                 screenshot_path,
@@ -1296,3 +1421,73 @@ def are_images_similar(path1: str, path2: str, hash_size: int = 8, threshold: in
     except Exception:
         pass
     return dist <= threshold
+
+
+def are_images_similar_roi(
+    path1: str,
+    path2: str,
+    y_center: int,
+    band_ratio: float = 0.12,
+    band_px: int | None = None,
+    hash_size: int = 8,
+    threshold: int = 5
+) -> bool:
+    """
+    Compare two images using aHash on a horizontal ROI band centered at y_center.
+    - band_ratio: fraction of image height to use if band_px not provided.
+    - Lower threshold => stricter equality.
+    """
+    try:
+        img1 = cv2.imread(path1, cv2.IMREAD_GRAYSCALE)
+        img2 = cv2.imread(path2, cv2.IMREAD_GRAYSCALE)
+        if img1 is None or img2 is None:
+            # Fall back to full-frame compare if load failed
+            return are_images_similar(path1, path2, hash_size=hash_size, threshold=threshold)
+
+        h1, w1 = img1.shape[:2]
+        h2, w2 = img2.shape[:2]
+        if h1 <= 0 or h2 <= 0:
+            return are_images_similar(path1, path2, hash_size=hash_size, threshold=threshold)
+
+        # Compute band height
+        if band_px is None or band_px <= 0:
+            band_px = max(8, int(round(min(h1, h2) * float(band_ratio if band_ratio is not None else 0.12))))
+
+        def _crop_band(gray, yc, band):
+            hh = gray.shape[0]
+            y0 = max(0, int(yc - band // 2))
+            y1 = min(hh, y0 + band)
+            if y1 - y0 < 4:
+                # Fallback: center band of minimum height
+                y0 = max(0, min(hh - 4, int(hh * 0.5) - 2))
+                y1 = min(hh, y0 + 4)
+            return gray[y0:y1, :], (y0, y1)
+
+        roi1, (y0_1, y1_1) = _crop_band(img1, y_center, band_px)
+        roi2, (y0_2, y1_2) = _crop_band(img2, y_center, band_px)
+
+        # If ROI invalid/small, fall back to full
+        if roi1.size == 0 or roi2.size == 0 or roi1.shape[0] < 4 or roi2.shape[0] < 4:
+            return are_images_similar(path1, path2, hash_size=hash_size, threshold=threshold)
+
+        # aHash over ROI
+        small1 = cv2.resize(roi1, (hash_size, hash_size), interpolation=cv2.INTER_AREA)
+        small2 = cv2.resize(roi2, (hash_size, hash_size), interpolation=cv2.INTER_AREA)
+        avg1 = small1.mean()
+        avg2 = small2.mean()
+        hbits1 = (small1.flatten() > avg1)
+        hbits2 = (small2.flatten() > avg2)
+        dist = hamming_distance(hbits1, hbits2)
+
+        try:
+            print(
+                f"🧮 aHash ROI compare: y={y_center} band_px={band_px} "
+                f"dist={dist} (threshold={threshold}) for:\n  {os.path.basename(path1)}[{y0_1}:{y1_1}]\n  {os.path.basename(path2)}[{y0_2}:{y1_2}]"
+            )
+        except Exception:
+            pass
+
+        return dist <= threshold
+    except Exception:
+        # On any error, fall back to full-frame compare
+        return are_images_similar(path1, path2, hash_size=hash_size, threshold=threshold)
