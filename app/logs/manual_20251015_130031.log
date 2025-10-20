@@ -1,6 +1,0 @@
-Session started 2025-10-15T13:00:31.119275 manual_confirm=True max_profiles=1
-[2025-10-15 13:00:31.119] Manual confirmation mode enabled; every step requires approval and is logged.
-[2025-10-15 13:00:31.129] BEGIN initialize_session_node idx=0 likes=0 comments=0 errors=0
-[2025-10-15 13:02:06.966] CONFIRM initialize_session_node -> NO
-[2025-10-15 13:02:06.968] ABORTED initialize_session_node
-[2025-10-15 13:02:06.970] BEGIN finalize_session_node idx=0 likes=0 comments=0 errors=0
