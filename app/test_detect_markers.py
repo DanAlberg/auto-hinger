@@ -109,6 +109,9 @@ def match_template_topk(
     use_edges: bool,
     top_k: int,
     min_conf: float,
+    edges_dilate_iter: int = 1,
+    min_px: int = 20,
+    max_roi_frac: float = 0.12,
 ) -> List[Dict[str, Any]]:
     """
     Run multi-scale template matching; return top-K candidate boxes across all scales.
@@ -118,10 +121,22 @@ def match_template_topk(
     y0 = max(0, int(h * roi_top))
     y1 = min(h, int(h * roi_bottom))
     roi = img[y0:y1, :]
+    roi_h = max(1, y1 - y0)
 
-    # Prepare ROI representations
+    # Prepare ROI representations (adaptive edges + dilation)
     roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    roi_edges = cv2.Canny(roi_gray, 50, 150) if use_edges else None
+    if use_edges:
+        v = float(np.median(roi_gray))
+        lower = int(max(0, (1.0 - 0.33) * v))
+        upper = int(min(255, (1.0 + 0.33) * v))
+        roi_edges = cv2.Canny(roi_gray, lower, upper)
+        kernel = np.ones((3, 3), np.uint8)
+        try:
+            roi_edges = cv2.dilate(roi_edges, kernel, iterations=int(edges_dilate_iter))
+        except Exception:
+            pass
+    else:
+        roi_edges = None
 
     candidates: List[Dict[str, Any]] = []
 
@@ -130,6 +145,10 @@ def match_template_topk(
         th = max(1, int(tpl_gray.shape[0] * s))
         if tw <= 1 or th <= 1:
             continue
+        # Size clamps to reduce false positives from oversized/undersized kernels
+        max_allowed = int(max(1, roi_h * float(max_roi_frac)))
+        if th < int(min_px) or th > max_allowed:
+            continue
 
         tpl_s = cv2.resize(tpl_gray, (tw, th), interpolation=cv2.INTER_AREA)
 
@@ -137,7 +156,15 @@ def match_template_topk(
         if use_edges:
             if roi_edges is None or roi_edges.shape[0] < th or roi_edges.shape[1] < tw:
                 continue
-            tpl_proc = cv2.Canny(tpl_s, 50, 150)
+            # Adaptive Canny + dilation for template edges
+            vt = float(np.median(tpl_s))
+            lower_t = int(max(0, (1.0 - 0.33) * vt))
+            upper_t = int(min(255, (1.0 + 0.33) * vt))
+            tpl_proc = cv2.Canny(tpl_s, lower_t, upper_t)
+            try:
+                tpl_proc = cv2.dilate(tpl_proc, kernel, iterations=int(edges_dilate_iter))
+            except Exception:
+                pass
             if roi_edges.shape[0] < tpl_proc.shape[0] or roi_edges.shape[1] < tpl_proc.shape[1]:
                 continue
             method = cv2.TM_CCOEFF_NORMED
@@ -311,6 +338,12 @@ def main():
     parser.add_argument("--top_k", type=int, default=5, help="Top-K candidates per template to visualize (default 5)")
     parser.add_argument("--tol_px", type=int, default=12, help="Tolerance in pixels for consensus Y (default 12)")
     parser.add_argument("--step", action="store_true", help="Pause after each stage and wait for Enter")
+    # CV calibration/tuning options
+    parser.add_argument("--expected_px", type=int, default=60, help="Expected on-screen icon height in px (default 60)")
+    parser.add_argument("--scale_tolerance", type=float, default=0.30, help="+/- tolerance around expected scale (default 0.30)")
+    parser.add_argument("--min_px", type=int, default=20, help="Minimum scaled template height in px (default 20)")
+    parser.add_argument("--max_roi_frac", type=float, default=0.12, help="Max scaled template height as fraction of ROI height (default 0.12)")
+    parser.add_argument("--edges_dilate_iter", type=int, default=1, help="Dilation iterations for edges (default 1)")
     # Calibration options
     parser.add_argument("--calibrate", action="store_true", help="Crop templates from the provided image using given boxes.")
     parser.add_argument("--age_tl", type=str, default="", help="Age top-left as 'x,y'")
@@ -406,8 +439,19 @@ def main():
         print(f"❌ Template load failed: {e}")
         sys.exit(1)
 
-    # Scales: UI icons are often smaller than template; sweep downwards too
-    scales = [round(s, 2) for s in np.arange(0.5, 1.61, 0.05).tolist()]
+    # Scales: anchor around expected on-device px height relative to template height
+    age_th = int(age_tpl.shape[0]) if age_tpl is not None else 0
+    gen_th = int(gen_tpl.shape[0]) if gen_tpl is not None else 0
+    s0_age = (float(args.expected_px) / float(age_th)) if age_th > 0 else 0.0
+    s0_gen = (float(args.expected_px) / float(gen_th)) if gen_th > 0 else 0.0
+
+    def band_scales(s0: float, tol: float, n: int = 15) -> List[float]:
+        s_min = max(0.01, s0 * (1.0 - tol))
+        s_max = max(s_min + 0.005, s0 * (1.0 + tol))
+        return [float(x) for x in np.linspace(s_min, s_max, num=n)]
+
+    age_scales = band_scales(s0_age, float(args.scale_tolerance))
+    gen_scales = band_scales(s0_gen, float(args.scale_tolerance))
     use_edges = not args.no_edges
 
     debug_dir = debug_dir_for_image(img_path)
@@ -417,14 +461,20 @@ def main():
     age_cands = match_template_topk(
         img, age_tpl, age_alpha,
         roi_top=args.roi_top, roi_bottom=args.roi_bottom,
-        scales=scales, use_edges=use_edges,
-        top_k=args.top_k, min_conf=float(args.threshold)
+        scales=age_scales, use_edges=use_edges,
+        top_k=args.top_k, min_conf=float(args.threshold),
+        edges_dilate_iter=int(args.edges_dilate_iter),
+        min_px=int(args.min_px),
+        max_roi_frac=float(args.max_roi_frac),
     )
     gen_cands = match_template_topk(
         img, gen_tpl, gen_alpha,
         roi_top=args.roi_top, roi_bottom=args.roi_bottom,
-        scales=scales, use_edges=use_edges,
-        top_k=args.top_k, min_conf=float(args.threshold)
+        scales=gen_scales, use_edges=use_edges,
+        top_k=args.top_k, min_conf=float(args.threshold),
+        edges_dilate_iter=int(args.edges_dilate_iter),
+        min_px=int(args.min_px),
+        max_roi_frac=float(args.max_roi_frac),
     )
 
     out_candidates = os.path.join(
@@ -452,7 +502,7 @@ def main():
         band_px = max(40, int(h * 0.05))  # ~5% of height band
         refined_age = focused_rerun(
             img, age_tpl, age_alpha, pivot_y=pivot, band_px=band_px,
-            scales=scales, use_edges=use_edges, top_k=args.top_k, min_conf=float(args.threshold)
+            scales=age_scales, use_edges=use_edges, top_k=args.top_k, min_conf=float(args.threshold)
         )
         out_refined = os.path.join(debug_dir, f"refined_age__band-{band_px}px__{ts}.png")
         draw_candidates_overlay(img, refined_age, gen_cands[:1], out_refined)
@@ -481,7 +531,13 @@ def main():
             "use_edges": use_edges,
             "top_k": args.top_k,
             "tol_px": args.tol_px,
-            "scales": scales[:],  # copy
+            "expected_px": args.expected_px,
+            "scale_tolerance": args.scale_tolerance,
+            "min_px": args.min_px,
+            "max_roi_frac": args.max_roi_frac,
+            "edges_dilate_iter": args.edges_dilate_iter,
+            "age_scales": age_scales[:],
+            "gen_scales": gen_scales[:],
         },
         "calibration": calibration_info or None,
         "stage_outputs": {

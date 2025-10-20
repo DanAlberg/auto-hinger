@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import os
 import glob
+import json
 from typing import Sequence, Union, List, Tuple, Dict, Any
 
 
@@ -741,7 +742,13 @@ def detect_age_icon_cv_multi(
     scales: list = None,
     threshold: float = 0.55,
     use_edges: bool = True,
-    save_debug: bool = True
+    save_debug: bool = True,
+    label: str = "age",
+    expected_px: int = 60,
+    scale_tolerance: float = 0.30,
+    min_px: int = 20,
+    max_roi_frac: float = 0.12,
+    edges_dilate_iter: int = 1
 ) -> dict:
     """
     Robust age/gender icon detection (multi-template, multi-scale).
@@ -773,17 +780,31 @@ def detect_age_icon_cv_multi(
         y0 = max(0, int(h * roi_top))
         y1 = min(h, int(h * roi_bottom))
         roi = img[y0:y1, :].copy()
+        roi_h = y1 - y0
         if roi.size == 0:
             print("❌ ROI empty for age icon detection")
             return {'found': False, 'confidence': 0.0}
 
         # Prepare ROI representations
         roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        roi_edges = cv2.Canny(roi_gray, 50, 150) if use_edges else None
+        if use_edges:
+            # Adaptive Canny based on ROI median + dilation to thicken thin strokes
+            v = float(np.median(roi_gray))
+            lower = int(max(0, (1.0 - 0.33) * v))
+            upper = int(min(255, (1.0 + 0.33) * v))
+            roi_edges = cv2.Canny(roi_gray, lower, upper)
+            kernel = np.ones((3, 3), np.uint8)
+            try:
+                roi_edges = cv2.dilate(roi_edges, kernel, iterations=int(edges_dilate_iter))
+            except Exception:
+                pass
+        else:
+            roi_edges = None
 
         # Build scale list
         if not scales:
-            scales = [round(s, 2) for s in np.arange(0.6, 1.51, 0.1).tolist()]
+            # Keep placeholder; per-template scale list will be derived around expected_px
+            scales = None
 
         # Normalize template paths to a list
         tpl_paths: List[str] = list(template_path) if isinstance(template_path, (list, tuple)) else [template_path]
@@ -807,16 +828,35 @@ def detect_age_icon_cv_multi(
             'width': 0, 'height': 0, 'top_left_x': 0, 'top_left_y': 0,
             'scale': 1.0, 'template_used': "", 'debug_image_path': ""
         }
+        top_candidates: List[Dict[str, Any]] = []
 
         for path in tpl_paths:
             tpl_gray, alpha = _load_template_with_alpha(path)
             if tpl_gray is None:
                 continue
 
-            for s in scales:
+            # Build per-template scale list around expected pixel height
+            if scales:
+                scales_local = scales
+            elif expected_px and expected_px > 0:
+                tg_h = int(tpl_gray.shape[0]) if tpl_gray is not None else 0
+                s0 = (float(expected_px) / float(tg_h)) if tg_h > 0 else 0.0
+                s_min = max(0.01, s0 * (1.0 - float(scale_tolerance)))
+                s_max = max(s_min + 0.005, s0 * (1.0 + float(scale_tolerance)))
+                # 15 steps across the band
+                scales_local = [float(x) for x in np.linspace(s_min, s_max, num=15)]
+            else:
+                # Fallback generic sweep if expected_px unavailable
+                scales_local = [round(s, 2) for s in np.arange(0.3, 2.51, 0.1).tolist()]
+
+            for s in scales_local:
                 tw = max(1, int(tpl_gray.shape[1] * s))
                 th = max(1, int(tpl_gray.shape[0] * s))
                 if tw <= 1 or th <= 1:
+                    continue
+                # Size clamps: avoid vanishingly small or overly large kernels relative to ROI height
+                max_allowed = int(max(1, roi_h * float(max_roi_frac)))
+                if th < int(min_px) or th > max_allowed:
                     continue
 
                 tpl_s = cv2.resize(tpl_gray, (tw, th), interpolation=cv2.INTER_AREA)
@@ -825,7 +865,15 @@ def detect_age_icon_cv_multi(
                 if use_edges:
                     if roi_edges is None or roi_edges.shape[0] < th or roi_edges.shape[1] < tw:
                         continue
-                    tpl_proc = cv2.Canny(tpl_s, 50, 150)
+                    # Adaptive Canny + dilation for template edges
+                    median_tpl = float(np.median(tpl_s))
+                    lower_t = int(max(0, (1.0 - 0.33) * median_tpl))
+                    upper_t = int(min(255, (1.0 + 0.33) * median_tpl))
+                    tpl_proc = cv2.Canny(tpl_s, lower_t, upper_t)
+                    try:
+                        tpl_proc = cv2.dilate(tpl_proc, kernel, iterations=int(edges_dilate_iter))
+                    except Exception:
+                        pass
                     if roi_edges.shape[0] < tpl_proc.shape[0] or roi_edges.shape[1] < tpl_proc.shape[1]:
                         continue
                     res = cv2.matchTemplate(roi_edges, tpl_proc, cv2.TM_CCOEFF_NORMED)
@@ -849,6 +897,23 @@ def detect_age_icon_cv_multi(
                         res = cv2.matchTemplate(roi_proc, tpl_s, cv2.TM_CCORR_NORMED, mask=mask_s)
 
                 _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                # Compute full-image candidate center for logging/top-k
+                top_left = max_loc
+                center_x = top_left[0] + tw // 2
+                center_y = top_left[1] + th // 2
+                full_x = center_x
+                full_y = y0 + center_y
+                # Track top candidates across templates/scales
+                try:
+                    top_candidates.append({
+                        "confidence": float(max_val),
+                        "scale": float(s),
+                        "template": os.path.basename(path),
+                        "x": int(full_x),
+                        "y": int(full_y)
+                    })
+                except Exception:
+                    pass
                 # Per-template CV overlay (when gated), shows the top match for this template/scale
                 if save_debug and _should_emit_cv_debug():
                     try:
@@ -899,28 +964,58 @@ def detect_age_icon_cv_multi(
         # Debug overlay for the best match
         if save_debug:
             dbg = img.copy()
+            # Draw ROI bounds for clarity
+            cv2.line(dbg, (0, y0), (w, y0), (255, 255, 0), 1)
+            cv2.line(dbg, (0, y1), (w, y1), (255, 255, 0), 1)
+            cv2.putText(
+                dbg,
+                f"ROI {roi_top:.2f}-{roi_bottom:.2f}",
+                (10, max(20, y0 - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
             if best['width'] > 0 and best['height'] > 0:
                 tl = (best['top_left_x'], best['top_left_y'])
                 br = (best['top_left_x'] + best['width'], best['top_left_y'] + best['height'])
                 color = (0, 255, 0) if best['found'] else (0, 0, 255)
                 cv2.rectangle(dbg, tl, br, color, 3)
-                label = f"conf={best['confidence']:.2f}, s={best['scale']:.2f}"
+                label_text = f"conf={best['confidence']:.2f}, s={best['scale']:.2f}"
                 if best.get('template_used'):
-                    label += f", tpl={os.path.basename(best['template_used'])}"
+                    label_text += f", tpl={os.path.basename(best['template_used'])}"
                 cv2.putText(
-                    dbg, label,
+                    dbg, label_text,
                     (tl[0], max(0, tl[1]-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA
                 )
-            dbg_path = os.path.join("images", f"debug_age_icon_{int(time.time()*1000)}.png")
+                # Crosshair at candidate center
+                try:
+                    cx, cy = int(best.get('x', 0)), int(best.get('y', 0))
+                    cv2.drawMarker(dbg, (cx, cy), color, markerType=cv2.MARKER_CROSS, markerSize=12, thickness=2)
+                except Exception:
+                    pass
+            kind = "gender" if (label and label.lower() == "gender") else "age"
+            dbg_path = os.path.join("images", f"debug_{kind}_icon_{int(time.time()*1000)}.png")
             try:
                 os.makedirs("images", exist_ok=True)
                 cv2.imwrite(dbg_path, dbg)
                 best['debug_image_path'] = dbg_path
-                print(f"🖼️  Age icon debug overlay: {dbg_path}")
+                print(f"🖼️  {kind.title()} icon debug overlay: {dbg_path}")
+                # Save top-3 candidates JSON alongside the overlay for quick inspection
+                try:
+                    top3 = sorted(top_candidates, key=lambda c: c.get("confidence", 0.0), reverse=True)[:3]
+                    cand_path = os.path.join("images", f"debug_cv_candidates_{kind}_{int(time.time()*1000)}.json")
+                    with open(cand_path, "w", encoding="utf-8") as jf:
+                        json.dump(top3, jf, ensure_ascii=False, indent=2)
+                    best['candidates_path'] = cand_path
+                except Exception:
+                    pass
             except Exception as _:
                 pass
 
-        print(f"🎯 Age icon multi-scale result: found={best['found']} conf={best['confidence']:.3f} scale={best['scale']:.2f} tpl={os.path.basename(best.get('template_used',''))}")
+        print(f"🎯 {label.title()} icon multi-scale result: found={best['found']} conf={best['confidence']:.3f} scale={best['scale']:.2f} tpl={os.path.basename(best.get('template_used',''))}")
+        print(f"[CV] {label} ROI=({roi_top:.2f},{roi_bottom:.2f}) y0={y0} y1={y1} cov={(roi_bottom - roi_top):.2f} x={best.get('x',0)} y={best.get('y',0)}")
         return best
 
     except Exception as e:
@@ -938,7 +1033,12 @@ def detect_age_row_dual_templates(
     save_debug: bool = True,
     tolerance_px: int = 5,
     tolerance_ratio: float = 0.005,
-    require_both: bool = True
+    require_both: bool = True,
+    expected_px: int = 60,
+    scale_tolerance: float = 0.30,
+    min_px: int = 20,
+    max_roi_frac: float = 0.12,
+    edges_dilate_iter: int = 1
 ) -> dict:
     """
     Run detection for two templates (e.g., age and gender icons) and derive a consensus Y.
@@ -957,7 +1057,13 @@ def detect_age_row_dual_templates(
                 roi_bottom=roi_bottom,
                 threshold=threshold,
                 use_edges=use_edges,
-                save_debug=save_debug
+                save_debug=save_debug,
+                label="age",
+                expected_px=expected_px,
+                scale_tolerance=scale_tolerance,
+                min_px=min_px,
+                max_roi_frac=max_roi_frac,
+                edges_dilate_iter=edges_dilate_iter
             )
             single['method'] = 'single_template'
             single['results'] = [single]
@@ -973,7 +1079,13 @@ def detect_age_row_dual_templates(
             roi_bottom=roi_bottom,
             threshold=threshold,
             use_edges=use_edges,
-            save_debug=save_debug
+            save_debug=save_debug,
+            label="age",
+            expected_px=expected_px,
+            scale_tolerance=scale_tolerance,
+            min_px=min_px,
+            max_roi_frac=max_roi_frac,
+            edges_dilate_iter=edges_dilate_iter
         )
         res2 = detect_age_icon_cv_multi(
             screenshot_path,
@@ -982,7 +1094,13 @@ def detect_age_row_dual_templates(
             roi_bottom=roi_bottom,
             threshold=threshold,
             use_edges=use_edges,
-            save_debug=save_debug
+            save_debug=save_debug,
+            label="gender",
+            expected_px=expected_px,
+            scale_tolerance=scale_tolerance,
+            min_px=min_px,
+            max_roi_frac=max_roi_frac,
+            edges_dilate_iter=edges_dilate_iter
         )
 
         img = cv2.imread(screenshot_path, cv2.IMREAD_COLOR)
