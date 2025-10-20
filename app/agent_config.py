@@ -49,21 +49,22 @@ class AgentConfig:
     max_scroll_attempts: int = 3
     scroll_distance_factor: float = 0.3  # how far to scroll
     vertical_swipe_x_pct: float = 0.12   # use leftmost ~12% of screen for all vertical swipes (poll-safe)
-    vertical_swipe_duration_ms: int = 1200   # increase duration so Android classifies as scroll, not tap
+    vertical_swipe_duration_ms: int = 600    # faster scroll (2x speed); still long enough to classify as scroll, not tap
     vertical_swipe_x_jitter_px: int = 3      # tiny horizontal jitter to avoid stationary-tap interpretation
     vertical_swipe_bottom_guard_pct: float = 0.90  # never place swipe endpoints below bottom 10% (avoid X button)
     
     # Horizontal content scraping
     max_horizontal_swipes: int = 8
     content_stable_repeats: int = 2
-    horizontal_swipe_dx: tuple = (0.80, 0.20)  # start_x_percent, end_x_percent
+    horizontal_swipe_dx: tuple = (0.77, 0.23)  # start_x_percent, end_x_percent (10% shorter vs center)
+    horizontal_swipe_duration_ms: int = 300    # faster horizontal swipe (2x speed)
     
     # Age icon detection & carousel Y inference
     age_icon_roi: tuple = (0.1, 0.9)            # search age icon within this vertical ROI (top..bottom)
     age_icon_scales: tuple = (0.6, 1.5, 0.1)     # start, end, step for multi-scale matching
     age_icon_threshold: float = 0.42             # normalized threshold for match acceptance
     age_icon_use_edges: bool = True              # use Canny edges during matching
-    age_icon_templates: tuple = ("assets/icon_age_white.png", "assets/icon_gender_white.png")  # templates to use for age-row detection
+    age_icon_templates: tuple = ("assets/icon_age.png", "assets/icon_gender.png", "assets/icon_height.png")  # templates to use for age-row detection (2-of-3)
     age_dual_y_tolerance_px: int = 5             # absolute pixel tolerance for age/gender Y alignment
     age_dual_y_tolerance_ratio: float = 0.005    # relative tolerance (fraction of image height)
     require_both_icons_for_y: bool = True        # require both icons and average their Y when close
@@ -93,6 +94,12 @@ class AgentConfig:
     image_hash_size: int = 8                     # aHash size (NxN); 8 -> 64-bit
     image_hash_threshold: int = 5                # Hamming distance threshold for "similar"
     image_stable_repeats: int = 2                # stop after N consecutive duplicates
+
+    # Horizontal carousel-specific stabilization (overrides when present)
+    hscroll_hash_threshold: int = 1              # stricter Hamming distance for horizontal carousel dedup
+    hscroll_stable_repeats: int = 1              # stop after 1 duplicate frame on horizontal carousel
+    hscroll_hash_roi_ratio: float = 0.12         # vertical band height (fraction of screen height) used for horizontal aHash ROI
+
     max_vertical_pages: int = 10                 # vertical pages cap before giving up
     
     # Recovery strategies
