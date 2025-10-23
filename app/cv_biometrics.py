@@ -77,11 +77,6 @@ LIFESTYLE_MAP = {
     "yes": "Yes",
     "no": "No",
     "sometimes": "Sometimes",
-    "socially": "Sometimes",
-    "occasionally": "Sometimes",
-    "rarely": "Sometimes",
-    "light": "Sometimes",
-    "moderate": "Sometimes",
 }
 
 
@@ -369,14 +364,58 @@ def detect_icons_in_band(
             cal_path = f"assets/calibrated/{icon}_cal.png"
             if os.path.exists(cal_path):
                 tpl_path = cal_path
+        # Use original black/white icons for matching (clean icons removed)
+        # clean_path = os.path.join("assets", "clean", os.path.basename(tpl_path))
+        # if os.path.exists(clean_path):
+        #     tpl_path = clean_path
+
         if not os.path.exists(tpl_path):
             continue
+        # Dynamically compute scale list based on expected_px and template size
+        abs_tpl_path = tpl_path
+        if not os.path.isabs(tpl_path):
+            abs_tpl_path = os.path.join(os.path.dirname(__file__), tpl_path)
+        tpl_img = cv2.imread(abs_tpl_path, cv2.IMREAD_UNCHANGED)
+        if tpl_img is not None:
+            tpl_h = tpl_img.shape[0]
+            # Auto-downscale oversized templates (e.g., 2K masters) to ~60px height
+            if tpl_h > 200:
+                scale_factor = 60.0 / tpl_h
+                new_w = max(1, int(round(tpl_img.shape[1] * scale_factor)))
+                new_h = max(1, int(round(tpl_img.shape[0] * scale_factor)))
+                tpl_img = cv2.resize(tpl_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                tpl_h = tpl_img.shape[0]
+                print(f"🔧 Downscaled {icon} template from 2K to {tpl_h}px for matching")
+
+            # Convert to 3-channel BGR if alpha present
+            if tpl_img.ndim == 3 and tpl_img.shape[2] == 4:
+                tpl_img = cv2.cvtColor(tpl_img, cv2.COLOR_BGRA2BGR)
+
+            # Save resized template to temporary file for matching
+            tmp_dir = os.path.join(os.path.dirname(__file__), "assets", "tmp")
+            os.makedirs(tmp_dir, exist_ok=True)
+            tmp_path = os.path.join(tmp_dir, f"{icon}_tmp.png")
+            cv2.imwrite(tmp_path, tpl_img)
+
+            base_scale = expected_px / max(1, tpl_h)
+            scales = [base_scale * (1 + s) for s in np.linspace(-scale_tolerance, scale_tolerance, 7)]
+            print(f"✅ Loaded template {icon}: {abs_tpl_path} (h={tpl_h}, base_scale={base_scale:.3f})")
+        else:
+            print(f"⚠️ Failed to load template for {icon}: {abs_tpl_path}")
+            scales = None
+            tmp_path = abs_tpl_path
+
+        # Narrow vertical ROI to ±band_px/3 around Y to avoid text regions
+        band_half = max(8, band_px // 3)
+        roi_top = max(0.0, (y - band_half) / max(1, H))
+        roi_bottom = min(1.0, (y + band_half) / max(1, H))
+
         res = detect_age_icon_cv_multi(
             screenshot_path,
-            template_path=tpl_path,
+            template_path=tmp_path,
             roi_top=roi_top,
             roi_bottom=roi_bottom,
-            scales=None,
+            scales=scales,
             threshold=threshold,
             use_edges=use_edges,
             save_debug=False,
@@ -400,6 +439,23 @@ def detect_icons_in_band(
             )
     # Sort by x to preserve left->right order
     detections.sort(key=lambda d: d.x)
+
+    # Debug overlay for visual verification
+    debug_dir = os.path.join("images", "debug")
+    os.makedirs(debug_dir, exist_ok=True)
+    dbg_path = os.path.join(debug_dir, f"debug_detect_{int(time.time()*1000)}.png")
+    dbg = img.copy()
+    for det in detections:
+        cx, cy, w, h = det.x, det.y, det.w, det.h
+        tl = (int(cx - w // 2), int(cy - h // 2))
+        br = (int(cx + w // 2), int(cy + h // 2))
+        color = (0, 255, 0) if det.conf >= 0.7 else (0, 165, 255)
+        cv2.rectangle(dbg, tl, br, color, 2)
+        label = f"{det.icon} {det.conf:.2f} ({w}x{h})"
+        cv2.putText(dbg, label, (tl[0], max(0, tl[1] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
+    cv2.imwrite(dbg_path, dbg)
+    print(f"🖼️ Debug overlay saved: {dbg_path}")
+
     return detections
 
 
@@ -722,14 +778,23 @@ def extract_biometrics_from_carousel(
     - Stop when no new icons appear after a seek swipe or max swipes
     Returns a result dict with biometrics, frames, band info, and timing breakdown.
     """
-    timings: Dict[str, int] = {
-        "capture_ms": 0,
-        "y_detect_ms": 0,
-        "icon_detect_ms": 0,
-        "ocr_ms": 0,
-        "swipe_ms": 0,
-        "parse_ms": 0,
-    }
+
+    # ============================================================
+    # TEMPORARY DISABLE: Commented out OCR, icon detection, and parsing logic
+    # ============================================================
+
+    # timings: Dict[str, int] = {
+    #     "capture_ms": 0,
+    #     "y_detect_ms": 0,
+    #     "icon_detect_ms": 0,
+    #     "ocr_ms": 0,
+    #     "swipe_ms": 0,
+    #     "parse_ms": 0,
+    # }
+    # t_all0 = _timing_now_ms()
+
+    # Initialize timing dictionary
+    timings: Dict[str, int] = {"capture_ms": 0, "y_detect_ms": 0, "swipe_ms": 0}
     t_all0 = _timing_now_ms()
 
     # Screen size
@@ -779,7 +844,8 @@ def extract_biometrics_from_carousel(
     band_px = int(band_px_override) if (band_px_override and band_px_override > 0) else max(60, int(H * float(band_height_ratio if band_height_ratio else 0.10)))
 
     # Controller params
-    target_cx = int(W * float(target_center_x_ratio if target_center_x_ratio else 0.38))
+    # Move marker left (aim_x ~ 0.30*W)
+    target_cx = int(W * 0.30)
     micro_dx = int(W * float(micro_swipe_ratio if micro_swipe_ratio else 0.25))
     seek_dx = int(W * float(seek_swipe_ratio if seek_swipe_ratio else 0.60))
 
@@ -817,144 +883,97 @@ def extract_biometrics_from_carousel(
 
         # Dedup ROI against last_kept
         if last_kept_path is not None:
+            # Focus similarity check on a narrow ±5% vertical band around detected Y
+            narrow_band_ratio = 0.10  # ±5% total height
             if are_images_similar_roi(
                 shot,
                 last_kept_path,
                 y_center=y,
-                band_ratio=float(band_px / max(1, H)),
-                hash_size=8,
-                threshold=3,  # tight for horizontal strip
+                band_ratio=narrow_band_ratio,
+                hash_size=12,  # finer granularity
+                threshold=1,   # stricter difference tolerance
             ):
                 consecutive_no_new += 1
             else:
                 consecutive_no_new = 0
 
         last_kept_path = shot
+        frames.append(shot)
 
-        # Detect icons in band
-        t_id = _timing_now_ms()
-        dets = detect_icons_in_band(
-            shot,
-            y=y,
-            band_px=band_px,
-            threshold=0.50,
-            use_edges=True,
-            expected_px=55,
-            scale_tolerance=0.50,
-            min_px=20,
-            max_roi_frac=0.12,
-            edges_dilate_iter=1,
-        )
-        timings["icon_detect_ms"] += max(0, _timing_now_ms() - t_id)
-
-        # Choose next candidate: first with bbox.left > processed_right_x + margin
-        margin = max(6, int(0.01 * W))
-        next_det: Optional[DetectionItem] = None
-        for d in dets:
-            left = d.x - d.w // 2
-            if left > processed_right_x + margin:
-                next_det = d
-                break
-
-        # If no icon candidate, try OCR fallback on the band before swiping
-        if next_det is None:
-            updated = _ocr_fallback_parse_band(shot, y, band_px, acc)
-            if updated and acc.get("height_cm") and acc.get("location"):
-                # If mandatory fields gathered, we can stop early
-                break
-            # No visible next or incomplete: perform micro/seek swipe
-            if consecutive_no_new >= 2:
-                _hswipe(seek_dx, duration_ms=450)
-            else:
-                _hswipe(micro_dx, duration_ms=400)
-            continue
-
-        # If candidate is far from target center, nudge to center and re-capture
-        delta = next_det.x - target_cx
-        if abs(delta) > max(8, next_det.w):  # allow if roughly centered
-            # Nudge: smaller swipe proportional to distance (remain inside safe corridor)
-            nudge = int(0.7 * delta)
-            _hswipe(nudge, duration_ms=360)
-            # Next loop will capture and re-detect
-            continue
-
-        # OCR and parse for the centered detection
-        t_ocr = _timing_now_ms()
-        ocr = ocr_text_for_detection(shot, next_det, engine=ocr_engine)
-        timings["ocr_ms"] += max(0, _timing_now_ms() - t_ocr)
-
-        t_parse = _timing_now_ms()
-        parse_and_accumulate(next_det.icon, ocr, acc)
-        timings["parse_ms"] += max(0, _timing_now_ms() - t_parse)
-
-        # Update processed_right_x to the right edge of this text ROI
-        # Approximate: right edge at icon right + pad + 6*icon_w
-        processed_right_x = min(W - 1, (next_det.x + next_det.w // 2) + max(6 * next_det.w, int(0.45 * W)))
-
-        seen_types.add(next_det.icon)
-        frames.append(
-            {
-                "screenshot": shot,
-                "icon": next_det.icon,
-                "icon_conf": next_det.conf,
-                "ocr_text": ocr.text,
-                "ocr_conf": ocr.conf,
-                "x": next_det.x,
-                "y": next_det.y,
-                "w": next_det.w,
-                "h": next_det.h,
-            }
-        )
-
-        # Heuristic stopping: if content stabilizes and we've likely seen the row
-        if consecutive_no_new >= 2 and (acc.get("height_cm") or acc.get("location")):
+        # Stop condition similar to vertical sweep: require two stable duplicates before stopping
+        if consecutive_no_new >= 2:
+            print("🛑 No new frames detected after two duplicates — stopping horizontal sweep.")
             break
 
-        # Nudge to bring next item
         _hswipe(micro_dx, duration_ms=400)
 
-    # Consolidate output biometrics
-    biometrics: Dict[str, Any] = {
-        "age": acc.get("age", {}).get("norm_value"),
-        "gender": acc.get("gender", {}).get("norm_value"),
-        "sexuality": acc.get("sexuality", {}).get("norm_value"),
-        "height_cm": acc.get("height_cm", {}).get("norm_value"),
-        "location": acc.get("location", {}).get("norm_value"),
-        "children": acc.get("children", {}).get("norm_value"),
-        "family_plans": acc.get("family_plans", {}).get("norm_value"),
-        "covid_vaccine": acc.get("covid_vaccine", {}).get("norm_value"),
-        "pets": acc.get("pets", {}).get("norm_value"),
-        "drinking": acc.get("drinking", {}).get("norm_value"),
-        "smoking": acc.get("smoking", {}).get("norm_value"),
-        "marijuana": acc.get("marijuana", {}).get("norm_value"),
-        "drugs": acc.get("drugs", {}).get("norm_value"),
-        # boolean only; we didn't explicitly detect zodiac icon
-        "zodiac_listed": None,
-    }
+    # ============================================================
+    # NEW: Stitch captured carousel bands into one image
+    # ============================================================
+    stitched_path = os.path.join("images", f"stitched_carousel_{int(time.time()*1000)}.png")
+    bands = []
+    for f in frames:
+        img = cv2.imread(f)
+        if img is None:
+            continue
+        H, W = img.shape[:2]
+        y0 = max(0, y - band_px // 2)
+        y1 = min(H, y + band_px // 2)
+        band = img[y0:y1, :].copy()
+        bands.append(band)
+
+    stitched_path_final = None
+    if bands:
+        # Change from horizontal to vertical stitching to include multiple Y-bands (e.g., lifestyle rows)
+        stitched = cv2.vconcat(bands)
+
+        # Append static biometrics region below the stitched carousel
+        base_img = cv2.imread(frames[0])
+        if base_img is not None:
+            H, W = base_img.shape[:2]
+            y0 = min(H, y + band_px // 2)
+            y1 = min(H, y + int(band_px * 5.0))
+            if y1 > y0:
+                biometrics_strip = base_img[y0:y1, :].copy()
+                stitched = cv2.vconcat([stitched, biometrics_strip])
+                print(f"➕ Appended static biometrics region from y={y0} to y={y1}")
+
+        os.makedirs("images", exist_ok=True)
+        stitched_path = os.path.join("images", f"stitched_carousel_full_{int(time.time()*1000)}.png")
+        cv2.imwrite(stitched_path, stitched)
+        stitched_path_final = stitched_path
+        print(f"🧩 Vertically stitched carousel with biometrics saved: {stitched_path}")
+    else:
+        print("⚠️ No bands captured for stitching.")
 
     total_ms = max(0, _timing_now_ms() - t_all0)
-    timing_report = {
-        **timings,
-        "total_ms": total_ms,
-    }
+    timing_report = {"capture_ms": timings["capture_ms"], "y_detect_ms": timings["y_detect_ms"], "swipe_ms": timings["swipe_ms"], "total_ms": total_ms}
 
-    if verbose_timing:
-        try:
-            print(
-                f"[CV_OCR_TIMING] total={timing_report['total_ms']}ms "
-                f"capture={timing_report['capture_ms']}ms y_detect={timing_report['y_detect_ms']}ms "
-                f"icon_detect={timing_report['icon_detect_ms']}ms ocr={timing_report['ocr_ms']}ms "
-                f"parse={timing_report['parse_ms']}ms swipe={timing_report['swipe_ms']}ms"
-            )
-        except Exception:
-            pass
+    # Maintain compatibility with previous return structure
+    biometrics: Dict[str, Any] = {}
 
+    # Return stitched image path as integral part of result
     return {
         "biometrics": biometrics,
+        "stitched_carousel": stitched_path_final,
         "frames": frames,
-        "y_band": {"y": y, "band_px": band_px, "method": y_info.get("method", y_method), "found": True},
+        "y_band": {"y": y, "band_px": band_px, "found": True},
         "timing": timing_report,
-        "debug_overlays": [],
+    }
+
+
+# New helper for integration
+def capture_horizontal_carousel(device: Any, y_override: Optional[int] = None) -> Dict[str, Any]:
+    """
+    Wrapper for horizontal carousel capture and stitching.
+    Used by main app to integrate horizontal extraction as a standalone step.
+    """
+    result = extract_biometrics_from_carousel(device, y_override=y_override)
+    return {
+        "stitched_carousel": result.get("stitched_carousel"),
+        "timing": result.get("timing", {}),
+        "frames": result.get("frames", []),
+        "y_band": result.get("y_band", {}),
     }
 
 

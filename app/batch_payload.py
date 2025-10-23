@@ -10,71 +10,60 @@ def _b64_image(image_path: str) -> str:
 
 def build_profile_prompt() -> str:
     """
-    Standardized prompt to extract full profile information from a set of screenshots.
-    Transport-agnostic; can be reused across providers.
+    Build the structured extraction prompt for the new main LLM call.
     """
-    return """
-    Analyze all provided dating profile screenshots together and extract a thorough, structured summary.
-
-    Return ONLY a strict JSON object with exactly these fields (keys must exist exactly as named; use null or empty arrays/objects when not visible on-screen). Do NOT infer or assume anything that is not explicitly visible on the screenshots.
-
-    {
-      "sexuality": "string|null",
-      "name": "string|null",                  // REQUIRED KEY (value null if not visible)
-      "age": "number|null",                   // REQUIRED KEY (value null if not visible)
-      "height": "string|null",                // REQUIRED KEY (value null if not visible)
-      "location": "string|null",              // REQUIRED KEY (value null if not visible)
-      "ethnicity": "string|null",
-      "current_children": "string|null",
-      "family_plans": "string|null",          // one of: "Don't want children", "Want children", "Open to children", "Not sure yet", "Prefer not to say"; or null if hidden
-      "covid_vaccine": "string|null",
-      "pets": {                               // booleans where possible; else null
-        "dog": "boolean|null",
-        "cat": "boolean|null",
-        "bird": "boolean|null",
-        "fish": "boolean|null",
-        "reptile": "boolean|null"
-      },
-      "zodiac_sign": "string|null",
-      "work": "string|null",                  // company name only (if shown); NOT job title
-      "job_title": "string|null",
-      "university": "string|null",
-      "religious_beliefs": "string|null",
-      "hometown": "string|null",
-      "politics": "string|null",              // one of: "Liberal", "Moderate", "Conservative", "Not political", "Other", "Prefer not to say"; or null if hidden
-      "languages_spoken": ["string", ...],
-      "dating_intentions": "string|null",
-      "relationship_type": "string|null",
-
-      // Lifestyle fields MUST be exactly one of: "Yes", "Sometimes", "No"; or null if the info is hidden.
-      "drinking": "Yes|Sometimes|No|null",
-      "smoking": "Yes|Sometimes|No|null",
-      "marijuana": "Yes|Sometimes|No|null",
-      "drugs": "Yes|Sometimes|No|null",
-
-      "bio": "string|null",
-      "prompts_and_answers": [
-        {"prompt": "string", "answer": "string"}
-      ],
-      "interests": ["string", ...],
-      "summary": "short free-text overview"
-    }
-
-    Guidance:
-    - REQUIRED KEYS: name, age, height, location MUST be present at top-level; set to null if not visible.
-    - All other fields are optional and may be null if not visible.
-    - Use only explicit on-screen text, chips, or labels. If uncertain, set the field to null.
-    - Lifestyle icons mapping (treat these specific UI icons/chips as valid signals when visibly selected):
-      • wine glass = drinking
-      • cigarette = smoking
-      • leaf = marijuana
-      • pill = drugs
-      If a lifestyle chip/icon is present and clearly selected but no frequency text is shown, set "Yes".
-      If frequency text is shown (e.g., "Socially", "Sometimes"), map to exactly "Yes", "Sometimes", or "No". If not visible, set null.
-    - For family_plans and politics, restrict to the enumerations above; if not shown, set null.
-    - "work" is the company name only if explicitly shown; if absent, set null (do not reuse job_title).
-    - Output ONLY a valid JSON object with no commentary, preamble, markdown, or code fences.
-    """
+    return (
+        "You are analyzing screenshots of a dating profile. Each image may contain text, icons, or structured fields. "
+        "Your task is to extract only the information that is explicitly visible on-screen. "
+        "If a field is not directly stated, leave it empty (do not infer or guess).\n\n"
+        "Return a single valid JSON object with the following fields:\n\n"
+        "{\n"
+        '  "Name": "",\n'
+        '  "Gender": "",\n'
+        '  "Sexuality": "",\n'
+        '  "Age": 0,\n'
+        '  "Height": 0,\n'
+        '  "Location": "",\n'
+        '  "Ethnicity": "",\n'
+        '  "Children": "",\n'
+        '  "Family plans": "",\n'
+        '  "Covid Vaccine": "",\n'
+        '  "Pets": "",\n'
+        '  "Zodiac Sign": "",\n'
+        '  "Job title": "",\n'
+        '  "University": "",\n'
+        '  "Religious Beliefs": "",\n'
+        '  "Home town": "",\n'
+        '  "Politics": "",\n'
+        '  "Languages spoken": "",\n'
+        '  "Dating Intentions": "",\n'
+        '  "Relationship type": "",\n'
+        '  "Drinking": "",\n'
+        '  "Smoking": "",\n'
+        '  "Marijuana": "",\n'
+        '  "Drugs": "",\n'
+        '  "Profile Prompts and Answers": [\n'
+        '    {"prompt": "", "answer": ""},\n'
+        '    {"prompt": "", "answer": ""},\n'
+        '    {"prompt": "", "answer": ""}\n'
+        '  ],\n'
+        '  "Other text on profile not covered by above": ""\n'
+        "}\n\n"
+        "Rules:\n"
+        "- If a field is not visible, leave it empty or null.\n"
+        "- For tri-state fields (Drinking, Smoking, Marijuana, Drugs), only use 'Yes', 'Sometimes', or 'No'.\n"
+        "- For categorical fields, use only the following valid options:\n"
+        "  • Children: 'Don't have children', 'Have children'\n"
+        "  • Family plans: 'Don't want children', 'Want children', 'Not sure yet'\n"
+        "  • Covid Vaccine: 'Vaccinated', 'Partially vaccinated', 'Not yet vaccinated'\n"
+        "  • Dating Intentions: 'Life partner', 'Long-term relationship', 'Long-term relationship, open to short', 'Short-term relationship, open to long', 'Short term relationship', 'Figuring out my dating goals'\n"
+        "  • Relationship type: 'Monogamy', 'Non-Monogamy', 'Figuring out my relationship type'\n"
+        "- For tri-state lifestyle fields (Drinking, Smoking, Marijuana, Drugs), only use 'Yes', 'Sometimes', or 'No'.\n"
+        "- For 'Profile Prompts and Answers', extract up to three visible prompt/answer pairs.\n"
+        "- For 'Other text', include any visible text that doesn’t fit the above categories (e.g., subtext, taglines, or captions).\n\n"
+        "Return only the JSON object. Do not include commentary, markdown, or code fences."
+        "One of the images will be a stitched image containing biometrics. This is part of the profile and should be included in the results"
+    )
 
 
 def build_llm_batch_payload(
