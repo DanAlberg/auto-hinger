@@ -63,9 +63,9 @@ class AgentConfig:
     use_cv_ocr_biometrics: bool = True
     cv_ocr_engine: str = "easyocr"  # "easyocr" | "tesseract"
     cv_band_height_ratio: float = 0.06
-    cv_micro_swipe_ratio: float = 0.25
+    cv_micro_swipe_ratio: float = 0.12
     cv_seek_swipe_ratio: float = 0.60
-    cv_target_center_x_ratio: float = 0.38
+    cv_target_center_x_ratio: float = 0.30
     verbose_cv_timing: bool = True
     ignore_zodiac: bool = True  # only store zodiac_listed boolean
 
@@ -139,7 +139,7 @@ class AgentConfig:
     ai_trace_log_dir: str = "logs"
 
     # Extraction models (LLM)
-    extraction_model: str = "gpt-5-mini"  # default to gpt-5-mini (fast); keep gpt-5 for heavy tasks
+    extraction_model: str = "gpt-5"
     extraction_small_model: str = "gpt-5-mini"  # for small/logical tasks
     extraction_retry: int = 1
     llm_max_images: int = 10  # hard cap for LLM image submissions

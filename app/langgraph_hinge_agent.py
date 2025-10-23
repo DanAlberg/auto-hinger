@@ -843,9 +843,11 @@ class LangGraphHingeAgent:
                     "errors_encountered": state.get("errors_encountered", 0) + 1
                 }
             
-            # Horizontal swipe collection until stable (image-dedup)
-            hshots, _ = self._collect_horizontal_content(state, y_horizontal)
-            all_screenshots.extend(hshots)
+            # Skip upstream horizontal stabilization; start CV immediately after Y
+            try:
+                print("⛔ Skipping pre-swipe; starting CV loop immediately.")
+            except Exception:
+                pass
 
             # CV+OCR biometrics extraction (horizontal row only)
             cv_result = {}
@@ -896,15 +898,32 @@ class LangGraphHingeAgent:
                         "completion_reason": f"LLM image cap exceeded: {len(all_screenshots)} > {cap}"
                     }
                 images_for_llm = list(all_screenshots)
-                if bool(getattr(self.config, "llm_exclude_horizontal", True)):
-                    try:
-                        images_for_llm = [p for p in all_screenshots if ("_hscroll_" not in p and "hrow_cv_" not in p)]
-                        print(f"📦 LLM payload images (horizontal excluded): {len(images_for_llm)} of {len(all_screenshots)}")
-                    except Exception:
-                        images_for_llm = list(all_screenshots)
-                llm_payload = build_llm_batch_payload(images_for_llm, prompt=build_profile_prompt())
+                # Always include stitched horizontal carousel image as first frame
+                stitched_path = cv_result.get("stitched_carousel") if isinstance(cv_result, dict) else None
+                images_for_llm = []
+                if stitched_path and os.path.exists(stitched_path):
+                    images_for_llm.append(stitched_path)
+                    print(f"📦 Added stitched horizontal carousel: {stitched_path}")
+
+                # Include top-of-profile screenshot (startup_precheck or langgraph)
+                top_candidates = [p for p in all_screenshots if ("startup_precheck" in p or "langgraph" in p)]
+                if top_candidates:
+                    top_path = top_candidates[0]
+                    images_for_llm.insert(0, top_path)
+                    print(f"📦 Added top-of-profile screenshot: {top_path}")
+
+                # Add all unique vertical pages after stitched image
+                images_for_llm.extend([p for p in all_screenshots if ("_vpage_" in p or "_post_full_scroll" in p)])
+                print(f"📦 LLM payload images (top + stitched + vertical): {len(images_for_llm)} total")
+
+                # Use only the new structured profile prompt
+                from prompt_engine import build_structured_profile_prompt
+                llm_payload = build_llm_batch_payload(images_for_llm, prompt=build_structured_profile_prompt())
                 images_count = llm_payload.get("meta", {}).get("images_count", len(all_screenshots))
                 print(f"📦 LLM batch images: {images_count}")
+                print("📸 Images submitted to LLM:")
+                for img_path in images_for_llm:
+                    print(f"   - {os.path.abspath(img_path)}")
                 # Submit to LLM (uses gpt-5 by default; gpt-5-mini for small logical calls if needed)
                 extracted_raw = self._submit_llm_batch_request(llm_payload)
                 # Validate required top-level keys presence (values may be null)
@@ -912,8 +931,15 @@ class LangGraphHingeAgent:
                 if missing_after:
                     print(f"⚠️ Extraction missing required keys after retry: {', '.join(missing_after)}")
                     extraction_failed = True
-                # Normalize to stable schema with nulls/[] defaults; tri-state lifestyle fields
-                extracted_profile = self._normalize_extracted_profile(extracted_raw)
+                # Use raw LLM output directly (no normalization)
+                extracted_profile = extracted_raw
+                # Optionally save raw JSON for debugging
+                try:
+                    os.makedirs("logs", exist_ok=True)
+                    with open(os.path.join("logs", "last_llm_output.json"), "w", encoding="utf-8") as f:
+                        json.dump(extracted_raw, f, indent=2)
+                except Exception as _e:
+                    print(f"⚠️ Could not save raw LLM output: {_e}")
                 # Merge CV+OCR biometrics into extracted profile (CV takes precedence over LLM)
                 try:
                     if getattr(self.config, "use_cv_ocr_biometrics", True) and isinstance(cv_result, dict):
@@ -936,18 +962,12 @@ class LangGraphHingeAgent:
                 llm_payload = {}
                 extraction_failed = True
 
-            # Keep comprehensive scoring path for current decision logic
-            comprehensive = self._analyze_complete_profile(all_screenshots, combined_text)
             current_screenshot = all_screenshots[-1] if all_screenshots else state['current_screenshot']
-            
-            quality_score = comprehensive.get('profile_quality_score', 0)
-            print(f"📊 Comprehensive profile quality: {quality_score}/10")
-            
             return {
                 **state,
                 "current_screenshot": current_screenshot,
                 "profile_text": combined_text,
-                "profile_analysis": comprehensive,
+                "profile_analysis": extracted_profile,
                 "extracted_profile": extracted_profile,
                 "extraction_failed": extraction_failed,
                 "llm_batch_request": llm_payload,
@@ -1251,8 +1271,8 @@ class LangGraphHingeAgent:
         for i in range(1, max_pages + 1):
             print(f"📜 Vertical page {i}/{max_pages}")
             sx = int(width * float(getattr(self.config, "vertical_swipe_x_pct", 0.12)))
-            sy1 = int(height * 0.83)
-            sy2 = int(height * 0.17)
+            sy1 = int(height * 0.75)
+            sy2 = int(height * 0.25)
             self._vertical_swipe_px(state, sx, sy1, sy2, duration_ms=int(getattr(self.config, "vertical_swipe_duration_ms", 1200)))
             time.sleep(2)
             shot = capture_screenshot(device, f"profile_{state['current_profile_index']}_vpage_{i}")
@@ -1480,133 +1500,7 @@ class LangGraphHingeAgent:
                 return "Sometimes"
         return None
 
-    def _normalize_extracted_profile(self, raw: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Normalize raw extraction into a stable shape with nulls/[] defaults.
-        Enforce tri-state on lifestyle fields: yes/sometimes/no.
-        """
-        out = {
-            "sexuality": None,
-            "name": None,
-            "age": None,
-            "height": None,
-            "location": None,
-            "ethnicity": None,
-            "current_children": None,
-            "family_plans": None,
-            "covid_vaccine": None,
-            "pets": {"dog": None, "cat": None, "bird": None, "fish": None, "reptile": None},
-            "zodiac_sign": None,
-            "work": None,
-            "job_title": None,
-            "university": None,
-            "education_level": None,
-            "religious_beliefs": None,
-            "hometown": None,
-            "politics": None,
-            "languages_spoken": [],
-            "dating_intentions": None,
-            "relationship_type": None,
-            "drinking": None,
-            "smoking": None,
-            "marijuana": None,
-            "drugs": None,
-            "bio": None,
-            "prompts_and_answers": [],
-            "interests": [],
-            "summary": "",
-        }
-        if not isinstance(raw, dict):
-            return out
-
-        # Copy simple fields if present
-        for k in ["sexuality", "name", "height", "location", "ethnicity", "current_children",
-                  "family_plans", "covid_vaccine", "zodiac_sign", "work", "job_title",
-                  "university", "religious_beliefs", "hometown",
-                  "politics", "dating_intentions", "relationship_type", "bio", "summary"]:
-            if k in raw:
-                out[k] = raw.get(k)
-
-        # Normalize enumerations with strict sets (family_plans, politics)
-        fam = raw.get("family_plans")
-        if isinstance(fam, str):
-            fs = fam.strip().lower()
-            if fs in ("don't want children", "do not want children", "dont want children"):
-                out["family_plans"] = "Don't want children"
-            elif fs == "want children":
-                out["family_plans"] = "Want children"
-            elif fs == "open to children":
-                out["family_plans"] = "Open to children"
-            elif fs == "not sure yet":
-                out["family_plans"] = "Not sure yet"
-            elif fs == "prefer not to say":
-                out["family_plans"] = "Prefer not to say"
-            else:
-                out["family_plans"] = None
-
-        pol = raw.get("politics")
-        if isinstance(pol, str):
-            ps = pol.strip().lower()
-            if ps == "liberal":
-                out["politics"] = "Liberal"
-            elif ps == "moderate":
-                out["politics"] = "Moderate"
-            elif ps == "conservative":
-                out["politics"] = "Conservative"
-            elif ps == "not political":
-                out["politics"] = "Not political"
-            elif ps == "other":
-                out["politics"] = "Other"
-            elif ps == "prefer not to say":
-                out["politics"] = "Prefer not to say"
-            else:
-                out["politics"] = None
-
-        # Age coercion
-        age_val = raw.get("age")
-        if isinstance(age_val, (int, float)):
-            out["age"] = int(age_val)
-        elif isinstance(age_val, str):
-            try:
-                out["age"] = int(float(age_val.strip()))
-            except Exception:
-                out["age"] = None
-
-        # Languages
-        langs = raw.get("languages_spoken", [])
-        if isinstance(langs, list):
-            out["languages_spoken"] = [str(x).strip() for x in langs if x is not None]
-
-        # Interests
-        ints = raw.get("interests", [])
-        if isinstance(ints, list):
-            out["interests"] = [str(x).strip() for x in ints if x is not None]
-
-        # Prompts and answers
-        paa = raw.get("prompts_and_answers", [])
-        if isinstance(paa, list):
-            clean_pa = []
-            for item in paa:
-                if isinstance(item, dict):
-                    clean_pa.append({
-                        "prompt": (item.get("prompt") or "").strip(),
-                        "answer": (item.get("answer") or "").strip(),
-                    })
-            out["prompts_and_answers"] = clean_pa
-
-        # Pets
-        pets = raw.get("pets", {})
-        if isinstance(pets, dict):
-            for p in ["dog", "cat", "bird", "fish", "reptile"]:
-                out["pets"][p] = self._to_bool_or_none(pets.get(p))
-
-        # Lifestyle tri-state
-        out["drinking"] = self._tri_state(raw.get("drinking"))
-        out["smoking"] = self._tri_state(raw.get("smoking"))
-        out["marijuana"] = self._tri_state(raw.get("marijuana"))
-        out["drugs"] = self._tri_state(raw.get("drugs"))
-
-        return out
+    # Removed normalization function — raw LLM output is now used directly
 
     @gated_step
     def scroll_profile_node(self, state: HingeAgentState) -> HingeAgentState:
