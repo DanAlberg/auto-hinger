@@ -25,6 +25,7 @@ from batch_payload import build_llm_batch_payload, build_profile_prompt
 from data_store import store_generated_comment, calculate_template_success_rates
 from prompt_engine import update_template_weights
 from profile_export import ProfileExporter
+from profile_eval import evaluate_profile_fields
 import hashlib
 from cv_biometrics import extract_biometrics_from_carousel
 
@@ -959,6 +960,18 @@ class LangGraphHingeAgent:
                 llm_payload = {}
                 extraction_failed = True
 
+            # Evaluate core fields for scoring modifiers (Home town, Job title, University)
+            eval_result = {}
+            try:
+                eval_result = evaluate_profile_fields(extracted_profile, model=getattr(self.config, "extraction_model", "gpt-5"))
+                try:
+                    print("[AI JSON profile_eval preview]")
+                    print(json.dumps(eval_result, indent=2)[:1000])
+                except Exception:
+                    pass
+            except Exception as _e:
+                print(f"⚠️ profile_eval exception: {_e}")
+
             current_screenshot = all_screenshots[-1] if all_screenshots else state['current_screenshot']
             return {
                 **state,
@@ -966,6 +979,7 @@ class LangGraphHingeAgent:
                 "profile_text": combined_text,
                 "profile_analysis": extracted_profile,
                 "extracted_profile": extracted_profile,
+                "profile_eval": eval_result,
                 "extraction_failed": extraction_failed,
                 "llm_batch_request": llm_payload,
                 "cv_biometrics": (cv_result.get("biometrics", {}) if isinstance(cv_result, dict) else {}),
@@ -1401,9 +1415,6 @@ class LangGraphHingeAgent:
         system_msg = {
             "role": "system",
             "content": (
-                "Return ONLY a strict, valid JSON object for the requested schema. "
-                "Top-level keys MUST include: name, age, height, location (values may be null). "
-                "All other fields are optional. No commentary, preamble, markdown, or code fences."
             ),
         }
         strict_retry_msg = {
@@ -1434,20 +1445,108 @@ class LangGraphHingeAgent:
             return json.loads(resp.choices[0].message.content or "{}")
 
         try:
-            attempt_msgs = [system_msg] + messages
+            attempt_msgs = messages
             result = _call(attempt_msgs)
+            # Normalize to Title-Case for core keys if model emitted lowercase variants
+            if isinstance(result, dict):
+                if "name" in result:
+                    if "Name" not in result:
+                        result["Name"] = result.pop("name")
+                    else:
+                        result.pop("name", None)
+                if "age" in result:
+                    if "Age" not in result:
+                        result["Age"] = result.pop("age")
+                    else:
+                        result.pop("age", None)
+                if "height" in result:
+                    if "Height" not in result:
+                        result["Height"] = result.pop("height")
+                    else:
+                        result.pop("height", None)
+                if "location" in result:
+                    if "Location" not in result:
+                        result["Location"] = result.pop("location")
+                    else:
+                        result.pop("location", None)
             # Validate required keys
             missing = self._validate_required_fields(result)
             if not missing:
                 return result
-            # Retry if missing required keys
-            retry_msgs = [strict_retry_msg] + attempt_msgs
+            # Retry if missing required keys - mutate user prompt text to add strict appendix (no system msg)
+            strict_appendix = "\n\nSTRICT: Ensure keys Name, Age, Height, Location exist exactly as spelled (Title-Case). Do not include lowercase variants or code fences. Return only a JSON object."
+            retry_msgs = list(messages)
+            if retry_msgs and isinstance(retry_msgs[0], dict) and isinstance(retry_msgs[0].get("content"), list):
+                new_content = []
+                appended = False
+                for part in retry_msgs[0]["content"]:
+                    if (not appended) and isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+                        new_content.append({"type": "text", "text": part["text"] + strict_appendix})
+                        appended = True
+                    else:
+                        new_content.append(part)
+                retry_msgs[0] = {**retry_msgs[0], "content": new_content}
             retry_result = _call(retry_msgs)
+            # Normalize Title-Case again post-retry
+            if isinstance(retry_result, dict):
+                if "name" in retry_result:
+                    if "Name" not in retry_result:
+                        retry_result["Name"] = retry_result.pop("name")
+                    else:
+                        retry_result.pop("name", None)
+                if "age" in retry_result:
+                    if "Age" not in retry_result:
+                        retry_result["Age"] = retry_result.pop("age")
+                    else:
+                        retry_result.pop("age", None)
+                if "height" in retry_result:
+                    if "Height" not in retry_result:
+                        retry_result["Height"] = retry_result.pop("height")
+                    else:
+                        retry_result.pop("height", None)
+                if "location" in retry_result:
+                    if "Location" not in retry_result:
+                        retry_result["Location"] = retry_result.pop("location")
+                    else:
+                        retry_result.pop("location", None)
             return retry_result
         except Exception as e1:
             try:
-                retry_msgs = [strict_retry_msg] + ([system_msg] + messages)
+                strict_appendix = "\n\nSTRICT: Ensure keys Name, Age, Height, Location exist exactly as spelled (Title-Case). Do not include lowercase variants or code fences. Return only a JSON object."
+                retry_msgs = list(messages)
+                if retry_msgs and isinstance(retry_msgs[0], dict) and isinstance(retry_msgs[0].get("content"), list):
+                    new_content = []
+                    appended = False
+                    for part in retry_msgs[0]["content"]:
+                        if (not appended) and isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+                            new_content.append({"type": "text", "text": part["text"] + strict_appendix})
+                            appended = True
+                        else:
+                            new_content.append(part)
+                    retry_msgs[0] = {**retry_msgs[0], "content": new_content}
                 retry_result = _call(retry_msgs)
+                # Normalize Title-Case post-retry
+                if isinstance(retry_result, dict):
+                    if "name" in retry_result:
+                        if "Name" not in retry_result:
+                            retry_result["Name"] = retry_result.pop("name")
+                        else:
+                            retry_result.pop("name", None)
+                    if "age" in retry_result:
+                        if "Age" not in retry_result:
+                            retry_result["Age"] = retry_result.pop("age")
+                        else:
+                            retry_result.pop("age", None)
+                    if "height" in retry_result:
+                        if "Height" not in retry_result:
+                            retry_result["Height"] = retry_result.pop("height")
+                        else:
+                            retry_result.pop("height", None)
+                    if "location" in retry_result:
+                        if "Location" not in retry_result:
+                            retry_result["Location"] = retry_result.pop("location")
+                        else:
+                            retry_result.pop("location", None)
                 return retry_result
             except Exception as e2:
                 print(f"❌ Extraction failed after retry: {e2}")
@@ -1458,7 +1557,7 @@ class LangGraphHingeAgent:
         Ensure required top-level keys exist (values may be None).
         Returns the list of missing required keys.
         """
-        required = ["name", "age", "height", "location"]
+        required = ["Name", "Age", "Height", "Location"]
         if not isinstance(obj, dict):
             return required
         missing = [k for k in required if k not in obj]
@@ -2500,77 +2599,12 @@ class LangGraphHingeAgent:
             # Primary sources
             analysis = state.get("profile_analysis", {}) or {}
             extracted = state.get("extracted_profile", {}) or {}
-            # Normalize keys to match exporter schema (capitalize first letter)
+            # Use keys exactly as provided by the LLM (no normalization)
+
+            # Direct append using exact keys from LLM (no case transforms, no remap)
             if isinstance(extracted, dict):
-                extracted = {k.strip().capitalize(): v for k, v in extracted.items()}
-
-            # New scan-only export (V2): write only scan-derived fields aligned to exporter schema.
-            try:
-                schema = list(getattr(self.exporter, "schema", [])) or []
-                pets = (extracted.get("pets", {}) or {}) if isinstance(extracted, dict) else {}
-
-                def _b(v):
-                    # Map boolean/None to Excel-friendly 1/0/""
-                    return 1 if v is True else 0 if v is False else ""
-
-                languages_spoken = ", ".join([str(x) for x in (extracted.get("languages_spoken") or []) if x])
-                interests = ", ".join([str(x) for x in (extracted.get("interests") or []) if x])
-                prompts = " | ".join([
-                    f"{(pa.get('prompt') or '').strip()}: {(pa.get('answer') or '').strip()}"
-                    for pa in (extracted.get("prompts_and_answers") or [])
-                    if isinstance(pa, dict)
-                ])
-
-                row_v2 = {
-                    # Identity
-                    "name": extracted.get("name"),
-                    "age": extracted.get("age"),
-                    "height": extracted.get("height"),
-                    "location": extracted.get("location"),
-                    # Profile
-                    "sexuality": extracted.get("sexuality"),
-                    "ethnicity": extracted.get("ethnicity"),
-                    "current_children": extracted.get("current_children"),
-                    "family_plans": extracted.get("family_plans"),
-                    "covid_vaccine": extracted.get("covid_vaccine"),
-                    "zodiac_sign": extracted.get("zodiac_sign"),
-                    "hometown": extracted.get("hometown"),
-                    # Education / work / beliefs
-                    "university": extracted.get("university"),
-                    "job_title": extracted.get("job_title"),
-                    "work": extracted.get("work"),
-                    "religious_beliefs": extracted.get("religious_beliefs"),
-                    # Politics / languages / relationship
-                    "politics": extracted.get("politics"),
-                    "languages_spoken": languages_spoken,
-                    "dating_intentions": extracted.get("dating_intentions"),
-                    "relationship_type": extracted.get("relationship_type"),
-                    # Lifestyle (tri-state)
-                    "drinking": extracted.get("drinking"),
-                    "smoking": extracted.get("smoking"),
-                    "marijuana": extracted.get("marijuana"),
-                    "drugs": extracted.get("drugs"),
-                    # Pets
-                    "pets_dog": _b(pets.get("dog")),
-                    "pets_cat": _b(pets.get("cat")),
-                    "pets_bird": _b(pets.get("bird")),
-                    "pets_fish": _b(pets.get("fish")),
-                    "pets_reptile": _b(pets.get("reptile")),
-                    # Content
-                    "bio": extracted.get("bio"),
-                    "prompts_and_answers": prompts,
-                    "interests": interests,
-                    "summary": extracted.get("summary") or "",
-                }
-
-                # If schema is defined, restrict to schema keys only (order preserved by ProfileExporter)
-                if schema:
-                    row_v2 = {k: row_v2.get(k, "") for k in schema}
-
-                self.exporter.append_row(row_v2)
+                self.exporter.append_row(extracted)
                 return
-            except Exception as _v2e:
-                print(f"⚠️  Export V2 path failed, falling back to legacy row build: {_v2e}")
 
             # Helpers
             def _get_ana(key, default=""):
