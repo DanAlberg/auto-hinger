@@ -48,23 +48,24 @@ def update_template_weights(success_rates: dict):
 def build_structured_profile_prompt() -> str:
     """
     Build the structured extraction prompt for the new main LLM call.
+    The JSON format and allowed values are explicitly defined for clarity.
     """
     return (
         "You are analyzing screenshots of a dating profile. Each image may contain text, icons, or structured fields. "
         "Your task is to extract only the information that is explicitly visible on-screen. "
         "If a field is not directly stated, leave it empty (do not infer or guess).\n\n"
-        "Return a single valid JSON object with the following fields:\n\n"
+        "Return exactly one valid JSON object matching this structure, with the same field names, order, and formatting:\n\n"
         "{\n"
         '  "Name": "",\n'
         '  "Gender": "",\n'
         '  "Sexuality": "",\n'
-        '  "Age": 0,\n'
-        '  "Height": 0,\n'
+        '  "Age": 0,  // Must be an integer\n'
+        '  "Height": 0,  // Must be an integer\n'
         '  "Location": "",\n'
         '  "Ethnicity": "",\n'
-        '  "Children": "",\n'
-        '  "Family plans": "",\n'
-        '  "Covid Vaccine": "",\n'
+        '  "Children": "",  // Must be one of: "Don\'t have children", "Have children".\n'
+        '  "Family plans": "",  // Must be one of: "Don\'t want children", "Want children", "Open to children", "Not sure yet".\n'
+        '  "Covid Vaccine": "",  // Must be one of: "Vaccinated", "Partially vaccinated", "Not yet vaccinated".\n'
         '  "Pets": "",\n'
         '  "Zodiac Sign": "",\n'
         '  "Job title": "",\n'
@@ -73,34 +74,27 @@ def build_structured_profile_prompt() -> str:
         '  "Home town": "",\n'
         '  "Politics": "",\n'
         '  "Languages spoken": "",\n'
-        '  "Dating Intentions": "",\n'
-        '  "Relationship type": "",\n'
-        '  "Drinking": "",\n'
-        '  "Smoking": "",\n'
-        '  "Marijuana": "",\n'
-        '  "Drugs": "",\n'
+        '  "Dating Intentions": "",  // Must be one of: "Life partner", "Long-term relationship", "Long-term relationship, open to short", "Short-term relationship, open to long", "Short term relationship", "Figuring out my dating goals".\n'
+        '  "Relationship type": "",  // Must be one of: "Monogamy", "Non-Monogamy", "Figuring out my relationship type".\n'
+        '  "Drinking": "",  // Must be one of: "Yes", "Sometimes", "No".\n'
+        '  "Smoking": "",  // Must be one of: "Yes", "Sometimes", "No".\n'
+        '  "Marijuana": "",  // Must be one of: "Yes", "Sometimes", "No".\n'
+        '  "Drugs": "",  // Must be one of: "Yes", "Sometimes", "No".\n'
         '  "Profile Prompts and Answers": [\n'
         '    {"prompt": "", "answer": ""},\n'
         '    {"prompt": "", "answer": ""},\n'
         '    {"prompt": "", "answer": ""}\n'
         '  ],\n'
-        '  "Other text on profile not covered by above": ""\n'
-        '  "Images filenames submitted to the LLM for this analysis": "",\n'
+        '  "Other text on profile not covered by above": "",\n'
         "}\n\n"
         "Rules:\n"
+        "- Return only the JSON object, with no commentary, markdown, or code fences.\n"
+        "- Do not include any text before or after the JSON.\n"
+        "- Do not use synonyms or variations for categorical values.\n"
         "- If a field is not visible, leave it empty or null.\n"
-        "- For tri-state fields (Drinking, Smoking, Marijuana, Drugs), only use 'Yes', 'Sometimes', or 'No'.\n"
-        "- For categorical fields, use only the following valid options:\n"
-        "  • Children: 'Don't have children', 'Have children'\n"
-        "  • Family plans: 'Don't want children', 'Want children', 'Not sure yet'\n"
-        "  • Covid Vaccine: 'Vaccinated', 'Partially vaccinated', 'Not yet vaccinated'\n"
-        "  • Dating Intentions: 'Life partner', 'Long-term relationship', 'Long-term relationship, open to short', 'Short-term relationship, open to long', 'Short term relationship', 'Figuring out my dating goals'\n"
-        "  • Relationship type: 'Monogamy', 'Non-Monogamy', 'Figuring out my relationship type'\n"
-        "- For tri-state lifestyle fields (Drinking, Smoking, Marijuana, Drugs), only use 'Yes', 'Sometimes', or 'No'.\n"
-        "- For 'Profile Prompts and Answers', extract up to three visible prompt/answer pairs.\n"
-        "- For 'Other text', include any visible text that doesn’t fit the above categories (e.g., subtext, taglines, or captions).\n\n"
-        "Return only the JSON object. Do not include commentary, markdown, or code fences."
-        "One of the images will be a stitched image containing biometrics. This is part of the profile and should be included in the results"
+        "- For 'Profile Prompts and Answers', extract three visible prompt/answer pairs.\n"
+        "- For 'Other text', include any visible text that doesn’t fit the above categories (e.g., subtext, taglines, or captions).\n"
+        "- One of the images will be a stitched image containing biometrics. This is part of the profile and should be included in the results."
     )
 
 

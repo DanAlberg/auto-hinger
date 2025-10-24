@@ -1,5 +1,4 @@
 import os
-import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -17,15 +16,6 @@ from helper_functions import (
     swipe,
     get_screen_resolution,
 )
-
-# OCR backend: Tesseract only (no torch/easyocr)
-_TESSERACT_AVAILABLE = False
-try:
-    import pytesseract  # type: ignore
-    from PIL import Image  # type: ignore
-    _TESSERACT_AVAILABLE = True
-except Exception:
-    _TESSERACT_AVAILABLE = False
 
 
 # Logical icon map (zodiac intentionally omitted per requirements)
@@ -96,14 +86,8 @@ class OCRResult:
     conf: float
 
 
-def _clamp_rect(x: int, y: int, w: int, h: int, W: int, H: int) -> Tuple[int, int, int, int]:
-    x0 = max(0, x)
-    y0 = max(0, y)
-    x1 = min(W, x + w)
-    y1 = min(H, y + h)
-    if x1 <= x0 or y1 <= y0:
-        return 0, 0, 0, 0
-    return x0, y0, (x1 - x0), (y1 - y0)
+# Removed all OCR-related functions and parsing utilities.
+# This module now only handles Y-band detection, icon detection, and horizontal carousel capture.
 
 
 def _maybe_set_tesseract_cmd() -> None:
@@ -977,54 +961,4 @@ def capture_horizontal_carousel(device: Any, y_override: Optional[int] = None) -
     }
 
 
-def merge_biometrics_into_extracted_profile(
-    extracted: Dict[str, Any],
-    biometrics: Dict[str, Any],
-) -> Dict[str, Any]:
-    """
-    Merge CV biometrics into existing extracted_profile:
-    - Fill missing keys (None) from biometrics
-    - Height stored as numeric centimeters (no suffix)
-    """
-    out = dict(extracted or {})
-    # Basic identity fields
-    if out.get("age") is None and biometrics.get("age") is not None:
-        out["age"] = int(biometrics["age"])
-    # Height: store as numeric centimeters (no unit suffix)
-    h_cm = biometrics.get("height_cm")
-    if out.get("height") in (None, "", 0) and isinstance(h_cm, int):
-        out["height"] = int(h_cm)
-    # Location mandatory
-    if (not out.get("location")) and biometrics.get("location"):
-        out["location"] = biometrics["location"]
-
-    # Optional fields
-    for k_src, k_dst in [
-        ("gender", "gender"),
-        ("sexuality", "sexuality"),
-        ("children", "current_children"),
-        ("family_plans", "family_plans"),
-        ("covid_vaccine", "covid_vaccine"),
-        ("drinking", "drinking"),
-        ("smoking", "smoking"),
-        ("marijuana", "marijuana"),
-        ("drugs", "drugs"),
-    ]:
-        if out.get(k_dst) in (None, "", []):
-            v = biometrics.get(k_src)
-            if v is not None:
-                out[k_dst] = v
-
-    # Pets to boolean dict structure if possible
-    pets_list = biometrics.get("pets") or []
-    if isinstance(pets_list, list):
-        pets_dict = out.get("pets", {}) or {}
-        for p in PETS:
-            key = p.lower()
-            val = None
-            if p.capitalize() in pets_list:
-                val = True
-            pets_dict[key] = val if val is not None else pets_dict.get(key)
-        out["pets"] = pets_dict
-
-    return out
+# merge_biometrics_into_extracted_profile removed — CV merge no longer used.

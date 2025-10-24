@@ -6,6 +6,27 @@ import os
 import glob
 import json
 from typing import Sequence, Union, List, Tuple, Dict, Any
+import subprocess
+
+
+def ensure_adb_running():
+    """
+    Ensure that the Android Debug Bridge (ADB) server is running.
+    If not, attempt to start it automatically.
+    """
+    print("🔍 Checking ADB status...")
+    try:
+        result = subprocess.run(["adb", "get-state"], capture_output=True, text=True)
+        if result.returncode != 0 or "device" not in result.stdout.lower():
+            print("⚙️ ADB not running, starting server...")
+            subprocess.run(["adb", "start-server"], check=True)
+            print("✅ ADB started successfully")
+        else:
+            print("✅ ADB is already running")
+    except FileNotFoundError:
+        raise RuntimeError("ADB not found. Please install Android Platform Tools and add to PATH.")
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to start ADB: {e}")
 
 
 def _should_emit_cv_debug() -> bool:

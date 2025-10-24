@@ -26,7 +26,7 @@ from data_store import store_generated_comment, calculate_template_success_rates
 from prompt_engine import update_template_weights
 from profile_export import ProfileExporter
 import hashlib
-from cv_biometrics import extract_biometrics_from_carousel, merge_biometrics_into_extracted_profile
+from cv_biometrics import extract_biometrics_from_carousel
 
 
 class HingeAgentState(TypedDict):
@@ -943,9 +943,6 @@ class LangGraphHingeAgent:
                 # Merge CV+OCR biometrics into extracted profile (CV takes precedence over LLM)
                 try:
                     if getattr(self.config, "use_cv_ocr_biometrics", True) and isinstance(cv_result, dict):
-                        extracted_profile = merge_biometrics_into_extracted_profile(
-                            extracted_profile, cv_result.get("biometrics", {}) or {}
-                        )
                         try:
                             print("[CV_OCR] Merged CV biometrics into extracted_profile (CV takes precedence).")
                         except Exception:
@@ -2503,6 +2500,9 @@ class LangGraphHingeAgent:
             # Primary sources
             analysis = state.get("profile_analysis", {}) or {}
             extracted = state.get("extracted_profile", {}) or {}
+            # Normalize keys to match exporter schema (capitalize first letter)
+            if isinstance(extracted, dict):
+                extracted = {k.strip().capitalize(): v for k, v in extracted.items()}
 
             # New scan-only export (V2): write only scan-derived fields aligned to exporter schema.
             try:
