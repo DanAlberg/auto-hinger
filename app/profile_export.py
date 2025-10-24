@@ -10,7 +10,14 @@ SCHEMA_PROMPT_ENGINE: List[str] = [
     "Home town", "Politics", "Languages spoken", "Dating Intentions",
     "Relationship type", "Drinking", "Smoking", "Marijuana", "Drugs",
     "prompt_1", "answer_1", "prompt_2", "answer_2", "prompt_3", "answer_3",
-    "Other text on profile not covered by above"
+    "Other text on profile not covered by above",
+    "Description of any non-photo media (For example poll, voice note)",
+    "Extensive Description of Photo 1",
+    "Extensive Description of Photo 2",
+    "Extensive Description of Photo 3",
+    "Extensive Description of Photo 4",
+    "Extensive Description of Photo 5",
+    "Extensive Description of Photo 6"
 ]
 
 
