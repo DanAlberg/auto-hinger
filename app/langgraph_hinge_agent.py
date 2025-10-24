@@ -964,11 +964,6 @@ class LangGraphHingeAgent:
             eval_result = {}
             try:
                 eval_result = evaluate_profile_fields(extracted_profile, model=getattr(self.config, "extraction_model", "gpt-5"))
-                try:
-                    print("[AI JSON profile_eval preview]")
-                    print(json.dumps(eval_result, indent=2)[:1000])
-                except Exception:
-                    pass
             except Exception as _e:
                 print(f"⚠️ profile_eval exception: {_e}")
 
