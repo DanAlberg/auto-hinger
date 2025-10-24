@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from langgraph_hinge_agent import LangGraphHingeAgent
+from helper_functions import ensure_adb_running
 from agent_config import AgentConfig, DEFAULT_CONFIG, FAST_CONFIG
 
 
@@ -155,6 +156,9 @@ async def main():
     try:
         # Parse arguments
         args = parse_arguments()
+
+        # Ensure ADB is running before proceeding
+        ensure_adb_running()
         
         # Get configuration  
         config = get_config(args.config, args)
