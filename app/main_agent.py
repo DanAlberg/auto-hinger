@@ -88,12 +88,6 @@ def parse_arguments():
         help="Scrape profile content only; do not like or dislike."
     )
     parser.add_argument(
-        "--no-excel", "--no-xlsx",
-        dest="no_excel",
-        action="store_true",
-        help="Disable Excel workbook logging (not recommended)."
-    )
-    parser.add_argument(
         "--skip-precheck", "--no-precheck",
         dest="skip_precheck",
         action="store_true",
@@ -124,7 +118,6 @@ def get_config(config_name: str, args) -> AgentConfig:
     # New flags
     config.like_mode = args.like_mode
     config.deterministic_mode = not args.ai_routing
-    config.export_xlsx = not args.no_excel
     config.dry_run = getattr(args, "dry_run", False)
     config.scrape_only = getattr(args, "scrape_only", False)
     # Temporary bypass for startup pre-check (like button visibility)
@@ -184,7 +177,6 @@ async def main():
         print(f"📝 AI Trace: {config.ai_trace}")
         print(f"🏷️ Like Mode: {config.like_mode}")
         print(f"🧭 Deterministic Mode: {config.deterministic_mode}")
-        print(f"📊 Export XLSX: {config.export_xlsx}")
         print(f"🧪 Dry Run Mode: {getattr(config, 'dry_run', False)}")
         print(f"🧲 Scrape Only Mode: {getattr(config, 'scrape_only', False)}")
         print(f"🛡️ Precheck Strict: {getattr(config, 'precheck_strict', True)}")
@@ -205,7 +197,6 @@ async def main():
         app_dir = Path(__file__).parent
         images_dir = app_dir / "images"
         logs_dir = app_dir / "logs"
-        excel_path = app_dir.parent / "profiles.xlsx"
         logs_dir.mkdir(parents=True, exist_ok=True)
         started_at_dt = datetime.now(timezone.utc)
         start_perf = time.perf_counter()
@@ -225,7 +216,6 @@ async def main():
             "profiles_processed": result.get("profiles_processed") if isinstance(result, dict) else None,
             "images_dir": images_dir.as_posix(),
             "logs_dir": logs_dir.as_posix(),
-            "excel_path": excel_path.as_posix(),
             "exit_status": "success"
         }
         ts = started_at_dt.strftime("%Y%m%d_%H%M%S")
@@ -234,7 +224,7 @@ async def main():
             json.dump(summary, f, ensure_ascii=False, indent=2)
 
         # Human-readable and machine-readable summaries
-        print(f'RUN SUMMARY: duration={duration_seconds}s, mode={mode}, profiles={config.max_profiles}, images={images_dir.as_posix()}, logs={logs_dir.as_posix()}, excel={excel_path.as_posix()}')
+        print(f'RUN SUMMARY: duration={duration_seconds}s, mode={mode}, profiles={config.max_profiles}, images={images_dir.as_posix()}, logs={logs_dir.as_posix()}')
         print("[RUN SUMMARY] " + json.dumps(summary, ensure_ascii=False))
         
         # Print summary

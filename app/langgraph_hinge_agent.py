@@ -2611,14 +2611,13 @@ class LangGraphHingeAgent:
             }
     
     def _export_profile_row(self, state: HingeAgentState, sent_comment: bool, screenshot_path: str) -> None:
-        """Append a structured row to the profile export (XLSX)."""
+        """Append a structured row to the database."""
         try:
-            if not getattr(self, "exporter", None) and getattr(self.config, "export_xlsx", True):
+            if not getattr(self, "exporter", None):
                 try:
                     self.exporter = ProfileExporter(
                         export_dir=self.config.export_dir,
                         session_id=self.session_id,
-                        export_xlsx=True,
                     )
                 except Exception:
                     self.exporter = None
@@ -2626,13 +2625,30 @@ class LangGraphHingeAgent:
                 return
 
             # Primary sources
-            analysis = state.get("profile_analysis", {}) or {}
+            analysis = state.get("profile_eval", {}) or {}
             extracted = state.get("extracted_profile", {}) or {}
             # Use keys exactly as provided by the LLM (no normalization)
 
-            # Direct append using exact keys from LLM (no case transforms, no remap)
+            # Append structured payload with metadata and analysis
             if isinstance(extracted, dict):
-                self.exporter.append_row(extracted)
+                comment_text = state.get("generated_comment", "") or ""
+                comment_hash = hashlib.sha256(comment_text.encode("utf-8")).hexdigest()[:16] if comment_text else ""
+                metadata = {
+                    "session_id": getattr(self, "session_id", ""),
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "profile_index": state.get("current_profile_index", 0),
+                    "sent_like": 1,
+                    "sent_comment": 1 if sent_comment else 0,
+                    "comment_id": state.get("comment_id", ""),
+                    "comment_hash": comment_hash,
+                    "screenshot_path": screenshot_path or "",
+                    "errors_encountered": state.get("errors_encountered", 0),
+                }
+                self.exporter.append_row({
+                    "extracted_profile": extracted,
+                    "metadata": metadata,
+                    "analysis": analysis
+                })
                 return
 
             # Helpers
@@ -2946,9 +2962,9 @@ class LangGraphHingeAgent:
         try:
             if getattr(self, "exporter", None):
                 paths = self.exporter.get_paths()
-                xlsx_path = paths.get("xlsx") or ""
-                if xlsx_path:
-                    print(f"📄 XLSX saved: {os.path.abspath(xlsx_path)}")
+                db_path = paths.get("db") or ""
+                if db_path:
+                    print(f"📄 Database saved: {os.path.abspath(db_path)}")
                 self.exporter.close()
         except Exception as _e:
             print(f"⚠️  Export close failed: {_e}")
