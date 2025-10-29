@@ -8,13 +8,14 @@ from langgraph.graph import StateGraph, END
 import base64
 from openai import OpenAI
 import os
+import shutil
 from datetime import datetime
 from functools import wraps
 
 from helper_functions import (
     connect_device, get_screen_resolution, open_hinge, reset_hinge_app,
     capture_screenshot, tap, tap_with_confidence, swipe,
-    dismiss_keyboard, clear_screenshots_directory, detect_like_button_cv, detect_send_button_cv, detect_comment_field_cv, detect_keyboard_tick_cv, detect_age_icon_cv, detect_age_icon_cv_multi, detect_age_row_dual_templates, infer_carousel_y_by_edges, are_images_similar, are_images_similar_roi, input_text_robust
+    dismiss_keyboard, clear_screenshots_directory, clear_submitted_directory, detect_like_button_cv, detect_send_button_cv, detect_comment_field_cv, detect_keyboard_tick_cv, detect_age_icon_cv, detect_age_icon_cv_multi, detect_age_row_dual_templates, infer_carousel_y_by_edges, are_images_similar, are_images_similar_roi, input_text_robust
 )
 from analyzer import (
     extract_text_from_image, analyze_dating_ui,
@@ -355,6 +356,8 @@ class LangGraphHingeAgent:
         
         # Clear old screenshots to prevent confusion
         clear_screenshots_directory()
+        # Also clear mirrored submitted images
+        clear_submitted_directory()
         
         device = connect_device(self.config.device_ip)
         if not device:
@@ -925,6 +928,37 @@ class LangGraphHingeAgent:
                 print("📸 Images submitted to LLM:")
                 for img_path in images_for_llm:
                     print(f"   - {os.path.abspath(img_path)}")
+
+                # Mirror the exact LLM payload images into images/submitted with friendly names
+                try:
+                    dest_dir = os.path.join("images", "submitted")
+                    os.makedirs(dest_dir, exist_ok=True)
+                    payload_paths = (llm_payload.get("meta", {}) or {}).get("images_paths", list(images_for_llm))
+                    idx = 0
+                    stitched_src = None
+                    for p in payload_paths:
+                        try:
+                            base = os.path.basename(p).lower()
+                            ext = os.path.splitext(p)[1] or ".png"
+                            if "stitched_carousel" in base or "stitched_" in base:
+                                stitched_src = p
+                                continue
+                            dest = os.path.join(dest_dir, f"profile {idx}{ext}")
+                            shutil.copy2(p, dest)
+                            idx += 1
+                        except Exception as _e:
+                            print(f"⚠️ Mirror copy failed for {p}: {_e}")
+                    if stitched_src:
+                        ext = os.path.splitext(stitched_src)[1] or ".png"
+                        dest = os.path.join(dest_dir, f"profile stitched{ext}")
+                        try:
+                            shutil.copy2(stitched_src, dest)
+                        except Exception as _e:
+                            print(f"⚠️ Mirror copy (stitched) failed: {_e}")
+                    print(f"🗂️  Mirrored {idx}{' + stitched' if stitched_src else ''} image(s) to {os.path.abspath(dest_dir)}")
+                except Exception as _e:
+                    print(f"⚠️ Mirror operation failed: {_e}")
+
                 # Submit to LLM (uses gpt-5 by default; gpt-5-mini for small logical calls if needed)
                 extracted_raw = self._submit_llm_batch_request(llm_payload)
                 # Validate required top-level keys presence (values may be null)
