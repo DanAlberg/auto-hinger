@@ -62,6 +62,32 @@ def clear_screenshots_directory():
         print(f"⚠️  Warning: Could not clear screenshots directory: {e}")
 
 
+def clear_submitted_directory():
+    """
+    Clear mirrored LLM-submitted images under images/submitted to keep runs clean.
+    Mirrors clear_screenshots_directory but scoped to the submitted subfolder.
+    """
+    try:
+        submitted_dir = os.path.join("images", "submitted")
+        if os.path.exists(submitted_dir):
+            old = glob.glob(os.path.join(submitted_dir, "*.png"))
+            count = len(old)
+            if count > 0:
+                print(f"🗑️  Clearing {count} mirrored images from images/submitted...")
+                for p in old:
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
+                print("✅ Submitted images directory cleared")
+            else:
+                print("📁 Submitted directory already clean")
+        else:
+            print("📁 images/submitted doesn't exist - will be created when needed")
+    except Exception as e:
+        print(f"⚠️  Warning: Could not clear submitted directory: {e}")
+
+
 # Use to connect directly
 def connect_device(user_ip_address="127.0.0.1"):
     adb = AdbClient(host=user_ip_address, port=5037)

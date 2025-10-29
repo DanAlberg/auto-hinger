@@ -76,11 +76,12 @@ CLI options
 - --ai-routing                 Enable an alternative routing mode (off by default)
 - --dry-run                    Run full logic but skip LIKE/SEND taps
 - --scrape-only                Scrape-only mode; no like/dislike actions
+- --skip-precheck, --no-precheck  Bypass startup like-button pre-check
 
 Behavior and defaults
 - Default action is like-with-comment. Falls back to like-only if typing/sending fails or the comment UI doesn’t appear.
 - Priority send preferred by default; normal send used if priority is unavailable.
-- Startup pre-check ensures the app begins at the top of the Hinge feed (Like visible); otherwise exits with guidance.
+- Startup pre-check ensures the app begins at the top of the Hinge feed (Like visible); otherwise exits with guidance. For testing, you can bypass this with --skip-precheck.
 - Manual confirm is off by default; enable with --confirm-steps for safety when testing.
 
 Outputs

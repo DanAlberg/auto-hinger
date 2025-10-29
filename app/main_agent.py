@@ -93,6 +93,12 @@ def parse_arguments():
         action="store_true",
         help="Disable Excel workbook logging (not recommended)."
     )
+    parser.add_argument(
+        "--skip-precheck", "--no-precheck",
+        dest="skip_precheck",
+        action="store_true",
+        help="Bypass startup like-button visibility pre-check (temporary testing)"
+    )
     
     return parser.parse_args()
 
@@ -121,6 +127,11 @@ def get_config(config_name: str, args) -> AgentConfig:
     config.export_xlsx = not args.no_excel
     config.dry_run = getattr(args, "dry_run", False)
     config.scrape_only = getattr(args, "scrape_only", False)
+    # Temporary bypass for startup pre-check (like button visibility)
+    try:
+        config.precheck_strict = not getattr(args, "skip_precheck", False)
+    except Exception:
+        pass
     
     return config
 
@@ -176,6 +187,7 @@ async def main():
         print(f"📊 Export XLSX: {config.export_xlsx}")
         print(f"🧪 Dry Run Mode: {getattr(config, 'dry_run', False)}")
         print(f"🧲 Scrape Only Mode: {getattr(config, 'scrape_only', False)}")
+        print(f"🛡️ Precheck Strict: {getattr(config, 'precheck_strict', True)}")
         print(f"🤖 AI Controller: OpenAI + LangGraph")
         print()
         
