@@ -1,107 +1,86 @@
 import os
-from typing import Dict, Any, List
-from openpyxl import Workbook, load_workbook
+from typing import Dict, Any, Optional
+from datetime import datetime
+import json
 
-
-SCHEMA_PROMPT_ENGINE: List[str] = [
-    "Name", "Gender", "Sexuality", "Age", "Height", "Location",
-    "Ethnicity", "Children", "Family plans", "Covid Vaccine", "Pets",
-    "Zodiac Sign", "Job title", "University", "Religious Beliefs",
-    "Home town", "Politics", "Languages spoken", "Dating Intentions",
-    "Relationship type", "Drinking", "Smoking", "Marijuana", "Drugs",
-    "prompt_1", "answer_1", "prompt_2", "answer_2", "prompt_3", "answer_3",
-    "Other text on profile not covered by above",
-    "Description of any non-photo media (For example poll, voice note)",
-    "Extensive Description of Photo 1",
-    "Extensive Description of Photo 2",
-    "Extensive Description of Photo 3",
-    "Extensive Description of Photo 4",
-    "Extensive Description of Photo 5",
-    "Extensive Description of Photo 6"
-]
+from sqlite_store import init_db, upsert_profile_flat, get_db_path
+from profile_eval import evaluate_profile_fields, compute_profile_score
 
 
 class ProfileExporter:
     """
-    New Excel exporter aligned with the JSON schema from prompt_engine.
-    - Creates or appends to profiles.xlsx at the repo root.
-    - Flattens 'Profile Prompts and Answers' into six columns.
-    - Preserves capitalization and field order from the JSON.
+    SQLite exporter (flat column schema).
+    - Writes one row per profile into profiles.db at the repo root.
+    - Input:
+      • Structured payload: {"extracted_profile": {...}, "analysis": {...?}, "metadata": {...?}}
+      • Legacy: a plain extracted profile dict (then analysis is computed here)
+    - Dedup: UNIQUE(Name COLLATE NOCASE, Age, Height_cm) via UPSERT DO NOTHING.
     """
 
-    def __init__(self, export_dir: str, session_id: str, export_xlsx: bool = True) -> None:
+    def __init__(self, export_dir: str, session_id: str) -> None:
+        # session_id kept only for compatibility with construction sites; not stored
         self.export_dir = export_dir
         self.session_id = session_id
-        self.export_xlsx = export_xlsx
-        self.schema = SCHEMA_PROMPT_ENGINE
+        self.db_path = get_db_path()
+        init_db(self.db_path)
 
-        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-        self.xlsx_path = os.path.join(repo_root, "profiles.xlsx")
-
-        if self.export_xlsx:
-            self._ensure_header()
-
-    def _ensure_header(self) -> None:
-        """Ensure the Excel file exists and has the correct header."""
-        if not os.path.exists(self.xlsx_path):
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "profiles"
-            ws.append(self.schema)
-            wb.save(self.xlsx_path)
-            wb.close()
-        else:
-            wb = load_workbook(self.xlsx_path)
-            ws = wb.active
-            header = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
-            if header != self.schema:
-                ws.delete_rows(1, ws.max_row)
-                ws.append(self.schema)
-            wb.save(self.xlsx_path)
-            wb.close()
-
-    def append_row(self, profile: Dict[str, Any]) -> None:
-        """Append a single profile row to the Excel file."""
-        if not self.export_xlsx:
+    def append_row(self, data: Dict[str, Any]) -> None:
+        if not data:
             return
 
-        # Flatten the JSON structure
-        row_data = self._flatten_profile(profile)
+        # Unpack payload
+        if isinstance(data, dict) and (
+            "extracted_profile" in data or "analysis" in data or "metadata" in data
+        ):
+            extracted: Dict[str, Any] = data.get("extracted_profile") or {}
+            analysis: Optional[Dict[str, Any]] = data.get("analysis")
+            metadata: Dict[str, Any] = data.get("metadata") or {}
+        else:
+            extracted = data if isinstance(data, dict) else {}
+            analysis = None
+            metadata = {}
 
-        # Ensure all schema fields exist
-        row = [row_data.get(field, "") for field in self.schema]
+        # Timestamp: prefer provided; else now
+        ts = metadata.get("timestamp") or datetime.now().isoformat(timespec="seconds")
 
+        # Ensure analysis exists
+        if not analysis:
+            try:
+                analysis = evaluate_profile_fields(extracted)
+            except Exception:
+                analysis = {}
+
+        # Compute score and breakdown
         try:
-            wb = load_workbook(self.xlsx_path)
-            ws = wb.active
-            ws.append(row)
-            wb.save(self.xlsx_path)
-            wb.close()
-            print(f"✅ Appended profile to {self.xlsx_path}")
-        except Exception as e:
-            print(f"❌ Failed to append profile: {e}")
+            scoring = compute_profile_score(extracted, analysis or {})
+            score = int(scoring.get("score", 0))
+            score_breakdown = json.dumps(scoring.get("contributors") or scoring.get("top_contributors") or [], ensure_ascii=False)
+        except Exception:
+            score = 0
+            score_breakdown = "[]"
 
-    def _flatten_profile(self, profile: Dict[str, Any]) -> Dict[str, Any]:
-        """Flatten nested JSON fields into a flat dict matching the schema."""
-        flat: Dict[str, Any] = {}
-
-        for key, value in profile.items():
-            if key == "Profile Prompts and Answers" and isinstance(value, list):
-                for i, item in enumerate(value[:3], start=1):
-                    flat[f"prompt_{i}"] = item.get("prompt", "")
-                    flat[f"answer_{i}"] = item.get("answer", "")
+        # UPSERT flattened row
+        try:
+            rowid = upsert_profile_flat(
+                extracted_profile=extracted,
+                enrichment=analysis or {},
+                score=score,
+                score_breakdown=score_breakdown,
+                timestamp=ts,
+                db_path=self.db_path,
+            )
+            if rowid is not None:
+                print(f"✅ Saved profile to {self.db_path} (rowid={rowid}, score={score})")
             else:
-                flat[key] = value
-
-        # Ensure all prompt/answer fields exist even if missing
-        for i in range(1, 4):
-            flat.setdefault(f"prompt_{i}", "")
-            flat.setdefault(f"answer_{i}", "")
-
-        return flat
+                print("🟨 Duplicate ignored (same Name/Age/Height_cm)")
+        except ValueError as ve:
+            # Height/Age missing or invalid, or Name empty
+            print(f"❌ Export validation error: {ve}")
+        except Exception as e:
+            print(f"❌ Export failed: {e}")
 
     def get_paths(self) -> Dict[str, str]:
-        return {"xlsx": self.xlsx_path if self.export_xlsx else ""}
+        return {"db": self.db_path}
 
     def close(self) -> None:
         pass

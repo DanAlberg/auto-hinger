@@ -10,12 +10,12 @@ app/images/*.png
 # Logs and outputs
 app/logs/
 app/logs/*.log
-app/logs/*.csv
-app/logs/*.xlsx
+
 # Images
 app/images/
 images/
-# Persistent workbook and CSVs
-profiles.xlsx
-*.xlsx
-*.csv
+
+# Database (SQLite)
+profiles.db
+profiles.db-shm
+profiles.db-wal

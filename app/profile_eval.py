@@ -260,15 +260,33 @@ def _score_profile(extracted: Dict[str, Any], enrichment: Dict[str, Any]) -> Dic
     # Top contributors by absolute magnitude (up to 5)
     contribs_sorted = sorted(contribs, key=lambda c: abs(c[2]), reverse=True)[:5]
     top_contributors = [{"field": f, "value": v, "delta": d} for (f, v, d) in contribs_sorted]
+    all_contributors = [{"field": f, "value": v, "delta": d} for (f, v, d) in contribs]
 
     result = {
         "decision": decision,
         "score": int(score),
         "nukes_triggered": [],
-        "top_contributors": top_contributors
+        "top_contributors": top_contributors,
+        "contributors": all_contributors
     }
     print("[SCORER] ", result)
     return result
+
+
+def compute_profile_score(extracted: Dict[str, Any], enrichment: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Public wrapper around the internal scorer. Returns a dict:
+      {
+        "decision": "LIKE"|"DISLIKE",
+        "score": int,
+        "nukes_triggered": [str],
+        "top_contributors": [{"field":..., "value":..., "delta":...}, ...]
+      }
+    """
+    try:
+        return _score_profile(extracted or {}, enrichment or {})
+    except Exception:
+        return {"decision": "DISLIKE", "score": 0, "nukes_triggered": [], "top_contributors": []}
 
 
 def evaluate_profile_fields(extracted: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
@@ -320,18 +338,6 @@ def evaluate_profile_fields(extracted: Dict[str, Any], model: str | None = None)
             print(json.dumps(parsed, indent=2)[:2000])
         except Exception:
             pass
-        # Run scoring using extracted (structured JSON) + enrichment (parsed)
-        try:
-            scoring = _score_profile(extracted, parsed)
-            try:
-                print(f"[SCORER_SUMMARY] decision={scoring.get('decision')} score={int(scoring.get('score', 0))}")
-            except Exception:
-                pass
-        except Exception as _se:
-            try:
-                print(f"⚠️ scoring failed: {_se}")
-            except Exception:
-                pass
         return parsed
     except Exception as e:
         try:

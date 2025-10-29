@@ -1,6 +1,6 @@
 # auto-hinger — Hinge Automation
 
-Automates interactions in the Hinge Android app using ADB, computer-vision template matching, and an optional cloud vision/text analysis provider. Navigates profiles, extracts content, makes decisions, and exports results.
+Automates interactions in the Hinge Android app using ADB, computer-vision template matching, and an optional cloud vision/text analysis provider. Navigates profiles, extracts content, makes decisions, and persists results to a local SQLite database.
 
 Warning
 - This can send automated likes/comments. Review platform terms and use at your own risk.
@@ -72,7 +72,6 @@ CLI options
 - --verbose, -v                Enable verbose logging
 - --manual-confirm, --confirm-steps  Require confirmation before each step; logs actions to logs/ (default: disabled)
 - --like-mode {priority,normal} Prefer the send button variant (default: priority)
-- --no-excel, --no-xlsx        Disable Excel workbook logging
 - --ai-routing                 Enable an alternative routing mode (off by default)
 - --dry-run                    Run full logic but skip LIKE/SEND taps
 - --scrape-only                Scrape-only mode; no like/dislike actions
@@ -85,8 +84,8 @@ Behavior and defaults
 - Manual confirm is off by default; enable with --confirm-steps for safety when testing.
 
 Outputs
-- Excel workbook: profiles.xlsx at repository root
-  - Updated incrementally; consecutive-duplicate guard: name+age+height
+- Database: profiles.db at repository root
+  - ACID writes with WAL; duplicate prevention by Name+Age+Height (canonicalized)
 - Screenshots: app/images/
 - Logs: app/logs/
 
@@ -108,7 +107,7 @@ Architecture
   - Handles OCR/extraction, UI interpretation, and decision hints
   - Provider is selected/configured via environment variables
 - Export & data: app/profile_export.py, app/data_store.py
-  - Writes to profiles.xlsx using openpyxl (incremental updates + de-dup guard)
+  - Writes to SQLite (app/sqlite_store.py) with canonical de-dup (Name+Age+Height)
 - Configuration: app/agent_config.py
   - Centralized runtime flags and mode toggles
 - Assets: app/assets/

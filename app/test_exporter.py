@@ -1,6 +1,7 @@
 import time
 from datetime import datetime
 from profile_export import ProfileExporter, SCHEMA_V2
+import sqlite3
 
 def build_sample_row():
     # Provide reasonable demo values for scan-derived fields; leave others blank
@@ -43,13 +44,30 @@ def build_sample_row():
 
 def main():
     session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    exporter = ProfileExporter(export_dir=".", session_id=session_id, export_xlsx=True)
+    exporter = ProfileExporter(export_dir=".", session_id=session_id)
     row = build_sample_row()
     exporter.append_row(row)
+    # Attempt duplicate insert to verify de-duplication by Name+Age+Height
+    exporter.append_row(row)
     paths = exporter.get_paths()
-    print("Wrote row to:", paths.get("xlsx"))
+    db_path = paths.get("db")
+    print("Wrote row to DB:", db_path)
+    # Verify only 1 row recorded for this session_id
+    try:
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        cur.execute("SELECT COUNT(*) FROM profiles WHERE session_id = ?", (session_id,))
+        count = cur.fetchone()[0]
+        print("Rows for this session_id:", count)
+        if count != 1:
+            print("⚠️ Dedup check unexpected count:", count)
+        else:
+            print("✅ Dedup check passed (1 row for duplicate inserts)")
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
-    # Allow time to open the workbook in Excel before write if you want to verify live update
-    # time.sleep(5)
     main()

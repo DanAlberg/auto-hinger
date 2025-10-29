@@ -148,11 +148,10 @@ class AgentConfig:
     dry_run: bool = False  # when True, never send likes/comments (skips Send taps)
     verify_typed_text: bool = False  # optional OCR sanity check after typing (off by default)
     
-    # Deterministic control & export settings
+    # Deterministic control & settings
     deterministic_mode: bool = True
     like_mode: str = "priority"  # "priority" or "normal"
     scrape_only: bool = False
-    export_xlsx: bool = True
     export_dir: str = "logs"
     precheck_strict: bool = True
     sync_check_at_stages: bool = True
