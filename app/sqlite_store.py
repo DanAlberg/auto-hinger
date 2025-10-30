@@ -88,7 +88,20 @@ def init_db(db_path: Optional[str] = None) -> None:
                 -- Derived
                 score INTEGER,
                 score_breakdown TEXT,
-                timestamp TEXT
+                timestamp TEXT,
+                -- Opener strategy result
+                primary_style TEXT,
+                flirty REAL,
+                complimentary REAL,
+                playful_witty REAL,
+                observational REAL,
+                shared_interest REAL,
+                genuinely_warm REAL,
+                relationship_forward REAL,
+                overall_confidence REAL,
+                rationale TEXT,
+                personalisation_hooks TEXT,
+                what_to_avoid TEXT
             );
             """
         )
@@ -100,13 +113,129 @@ def init_db(db_path: Optional[str] = None) -> None:
             ON profiles(Name COLLATE NOCASE, Age, Height_cm);
             """
         )
-        # Ensure score_breakdown column exists on pre-existing DBs
+        # Ensure supplementary columns exist on pre-existing DBs
         try:
             cur.execute("ALTER TABLE profiles ADD COLUMN score_breakdown TEXT;")
         except Exception:
             pass
+        for ddl in [
+            "ALTER TABLE profiles ADD COLUMN primary_style TEXT;",
+            "ALTER TABLE profiles ADD COLUMN flirty REAL;",
+            "ALTER TABLE profiles ADD COLUMN complimentary REAL;",
+            "ALTER TABLE profiles ADD COLUMN playful_witty REAL;",
+            "ALTER TABLE profiles ADD COLUMN observational REAL;",
+            "ALTER TABLE profiles ADD COLUMN shared_interest REAL;",
+            "ALTER TABLE profiles ADD COLUMN genuinely_warm REAL;",
+            "ALTER TABLE profiles ADD COLUMN relationship_forward REAL;",
+            "ALTER TABLE profiles ADD COLUMN overall_confidence REAL;",
+            "ALTER TABLE profiles ADD COLUMN rationale TEXT;",
+            "ALTER TABLE profiles ADD COLUMN personalisation_hooks TEXT;",
+            "ALTER TABLE profiles ADD COLUMN what_to_avoid TEXT;",
+        ]:
+            try:
+                cur.execute(ddl)
+            except Exception:
+                pass
 
         con.commit()
+    finally:
+        con.close()
+
+
+# ---------------------- Opener results logging ----------------------
+
+def json_dumps_safe(obj: Any) -> str:
+    try:
+        import json
+        return json.dumps(obj if obj is not None else [])
+    except Exception:
+        return "[]"
+
+
+def update_profile_opener_fields(
+    profile_id: int,
+    result: Dict[str, Any],
+    db_path: Optional[str] = None
+) -> None:
+    """
+    Persist opening-style JSON fields onto the existing profiles row (one row per individual).
+      - primary_style (str)
+      - style_weights (dict with keys: flirty, complimentary, playful_witty, observational, shared_interest, genuinely_warm, relationship_forward)
+      - overall_confidence (float)
+      - rationale (str)
+      - personalisation_hooks (list[str])
+      - what_to_avoid (list[str])
+    """
+    if not isinstance(result, dict):
+        result = {}
+    style_weights = result.get("style_weights") or {}
+
+    def _to_float(x):
+        try:
+            return float(x)
+        except Exception:
+            return 0.0
+
+    vals = {
+        "primary_style": (result.get("primary_style") or "").strip(),
+        "flirty": _to_float(style_weights.get("flirty")),
+        "complimentary": _to_float(style_weights.get("complimentary")),
+        "playful_witty": _to_float(style_weights.get("playful_witty")),
+        "observational": _to_float(style_weights.get("observational")),
+        "shared_interest": _to_float(style_weights.get("shared_interest")),
+        "genuinely_warm": _to_float(style_weights.get("genuinely_warm")),
+        "relationship_forward": _to_float(style_weights.get("relationship_forward")),
+        "overall_confidence": _to_float(result.get("overall_confidence")),
+        "rationale": result.get("rationale") or "",
+        "personalisation_hooks": json_dumps_safe(result.get("personalisation_hooks")),
+        "what_to_avoid": json_dumps_safe(result.get("what_to_avoid")),
+    }
+
+    db_path = db_path or get_db_path()
+    con = sqlite3.connect(db_path)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            """
+            UPDATE profiles SET
+                primary_style = :primary_style,
+                flirty = :flirty,
+                complimentary = :complimentary,
+                playful_witty = :playful_witty,
+                observational = :observational,
+                shared_interest = :shared_interest,
+                genuinely_warm = :genuinely_warm,
+                relationship_forward = :relationship_forward,
+                overall_confidence = :overall_confidence,
+                rationale = :rationale,
+                personalisation_hooks = :personalisation_hooks,
+                what_to_avoid = :what_to_avoid
+            WHERE id = :id
+            """,
+            {**vals, "id": int(profile_id)}
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+# ---------------------- Opener lookup helpers ----------------------
+
+def get_profile_id_by_unique(name: str, age: int, height_cm: int, db_path: Optional[str] = None) -> Optional[int]:
+    """
+    Lookup an existing profile row id by the composite UNIQUE (Name NOCASE, Age, Height_cm).
+    Returns the latest matching id if found, else None.
+    """
+    db_path = db_path or get_db_path()
+    con = sqlite3.connect(db_path)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "SELECT id FROM profiles WHERE Name = ? COLLATE NOCASE AND Age = ? AND Height_cm = ? ORDER BY id DESC LIMIT 1;",
+            (name or "", int(age), int(height_cm))
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row else None
     finally:
         con.close()
 

@@ -139,6 +139,56 @@ def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float
     return parsed
 
 
+def chat_json_system_user(system_prompt: str, user_prompt: str, model: str = "gpt-5-mini") -> Dict[str, Any]:
+    """
+    JSON-only chat call with an explicit system message and a user message.
+    """
+    from time import perf_counter
+    _ai_trace_log([
+        f"AI_CALL call_id=chat_json_system_user model={model} response_format=json_object",
+        "SYSTEM=<<<BEGIN",
+        * (system_prompt or "").splitlines(),
+        "<<<END",
+        "USER=<<<BEGIN",
+        * (user_prompt or "").splitlines(),
+        "<<<END",
+    ])
+    messages = [
+        {"role": "system", "content": system_prompt or ""},
+        {"role": "user", "content": user_prompt or ""},
+    ]
+    t0 = perf_counter()
+    resp = _client.chat.completions.create(
+        model=model,
+        response_format={"type": "json_object"},
+        messages=messages,
+    )
+    dt_ms = int((perf_counter() - t0) * 1000)
+    _ai_trace_log([f"AI_TIME call_id=chat_json_system_user model={model} duration_ms={dt_ms}"])
+    try:
+        print(f"[AI] chat_json_system_user model={model} duration={dt_ms}ms")
+    except Exception:
+        pass
+
+    raw = resp.choices[0].message.content or "{}"
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        try:
+            start = raw.find("{"); end = raw.rfind("}")
+            parsed = json.loads(raw[start:end+1]) if start != -1 and end != -1 and end > start else {}
+        except Exception:
+            parsed = {}
+
+    # Pretty-print the JSON to console for quick review (truncated)
+    try:
+        print("[AI JSON chat_json_system_user]")
+        print(json.dumps(parsed, indent=2)[:2000])
+    except Exception:
+        pass
+    return parsed
+
+
 def extract_text_from_image(image_path: str) -> str:
     """
     Extract visible text (bio, name/age, prompts/answers, interests, location) from a dating profile screenshot.
