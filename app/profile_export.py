@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 import json
 
-from sqlite_store import init_db, upsert_profile_flat, get_db_path
+from sqlite_store import init_db, upsert_profile_flat, get_db_path, get_profile_id_by_unique
 from profile_eval import evaluate_profile_fields, compute_profile_score
 
 
@@ -24,7 +24,7 @@ class ProfileExporter:
         self.db_path = get_db_path()
         init_db(self.db_path)
 
-    def append_row(self, data: Dict[str, Any]) -> None:
+    def append_row(self, data: Dict[str, Any]) -> Optional[int]:
         if not data:
             return
 
@@ -69,15 +69,31 @@ class ProfileExporter:
                 timestamp=ts,
                 db_path=self.db_path,
             )
+            pid: Optional[int] = None
             if rowid is not None:
+                pid = int(rowid)
                 print(f"✅ Saved profile to {self.db_path} (rowid={rowid}, score={score})")
             else:
+                # Duplicate: resolve existing id via UNIQUE key (Name, Age, Height_cm)
+                try:
+                    name = (extracted.get("Name") or "").strip()
+                    age_v = extracted.get("Age")
+                    height_v = extracted.get("Height") if extracted.get("Height") is not None else extracted.get("Height_cm")
+                    age_i = int(float(age_v)) if age_v is not None and str(age_v).strip() != "" else None
+                    height_i = int(float(height_v)) if height_v is not None and str(height_v).strip() != "" else None
+                    if name and age_i is not None and height_i is not None:
+                        pid = get_profile_id_by_unique(name, age_i, height_i, db_path=self.db_path)
+                except Exception:
+                    pid = None
                 print("🟨 Duplicate ignored (same Name/Age/Height_cm)")
+            return pid
         except ValueError as ve:
             # Height/Age missing or invalid, or Name empty
             print(f"❌ Export validation error: {ve}")
+            return None
         except Exception as e:
             print(f"❌ Export failed: {e}")
+            return None
 
     def get_paths(self) -> Dict[str, str]:
         return {"db": self.db_path}

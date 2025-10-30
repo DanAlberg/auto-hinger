@@ -22,7 +22,7 @@ from analyzer import (
     find_ui_elements, analyze_profile_scroll_content,
     detect_comment_ui_elements, generate_comment, generate_contextual_date_comment
 )
-from batch_payload import build_llm_batch_payload, build_profile_prompt
+from batch_payload import build_llm_batch_payload, build_profile_prompt, run_opening_style
 from data_store import store_generated_comment, calculate_template_success_rates
 from prompt_engine import update_template_weights
 from profile_export import ProfileExporter
@@ -812,6 +812,8 @@ class LangGraphHingeAgent:
             width = state["width"]
             height = state["height"]
             device = state["device"]
+            t_scan_start = time.perf_counter()
+            timings: Dict[str, Any] = {}
             
             all_screenshots: list[str] = []
             # No per-screenshot text extraction; dedup by image similarity and batch analyze once
@@ -824,15 +826,25 @@ class LangGraphHingeAgent:
             sx = int(width * float(getattr(self.config, "vertical_swipe_x_pct", 0.12)))
             y1 = int(height * 0.77)
             y2 = int(height * 0.33)
+            t0_vs = time.perf_counter()
             self._vertical_swipe_px(state, sx, y1, y2, duration_ms=int(getattr(self.config, "vertical_swipe_duration_ms", 1200)))
             time.sleep(2)
             post_full_scroll = capture_screenshot(device, f"profile_{state['current_profile_index']}_post_full_scroll")
             all_screenshots.append(post_full_scroll)
+            try:
+                timings["vertical_settle_scroll_ms"] = int((time.perf_counter() - t0_vs) * 1000)
+            except Exception:
+                pass
             
             # Detect age icon Y for horizontal carousel:
             # Try early frames first (pre-scroll), then post_full_scroll (each with its own adaptive seek)
             print(f"SWEEP_START image={os.path.basename(post_full_scroll)}")
+            t0_sweep = time.perf_counter()
             sweep = self._sweep_icons_find_y(state, start_image=post_full_scroll)
+            try:
+                timings["sweep_y_ms"] = int((time.perf_counter() - t0_sweep) * 1000)
+            except Exception:
+                pass
             if sweep.get("found"):
                 y_horizontal = int(sweep["y"])
                 pages = int(sweep.get("pages_scanned", 0))
@@ -881,7 +893,12 @@ class LangGraphHingeAgent:
                     cv_result = {}
             
             # Vertical paging collection until stable (image-dedup)
+            t0_vp = time.perf_counter()
             vshots, _ = self._collect_vertical_pages(state)
+            try:
+                timings["vertical_paging_ms"] = int((time.perf_counter() - t0_vp) * 1000)
+            except Exception:
+                pass
             all_screenshots.extend(vshots)
             
             # Analyze once with all unique screenshots (no interim AI calls)
@@ -903,6 +920,7 @@ class LangGraphHingeAgent:
                     }
                 images_for_llm = list(all_screenshots)
                 # Always include stitched horizontal carousel image as first frame
+                t_payload = time.perf_counter()
                 stitched_path = cv_result.get("stitched_carousel") if isinstance(cv_result, dict) else None
                 images_for_llm = []
                 if stitched_path and os.path.exists(stitched_path):
@@ -959,8 +977,17 @@ class LangGraphHingeAgent:
                 except Exception as _e:
                     print(f"⚠️ Mirror operation failed: {_e}")
 
+                try:
+                    timings["payload_prep_ms"] = int((time.perf_counter() - t_payload) * 1000)
+                except Exception:
+                    pass
                 # Submit to LLM (uses gpt-5 by default; gpt-5-mini for small logical calls if needed)
+                t0_ext = time.perf_counter()
                 extracted_raw = self._submit_llm_batch_request(llm_payload)
+                try:
+                    timings["extraction_llm_ms"] = int((time.perf_counter() - t0_ext) * 1000)
+                except Exception:
+                    pass
                 # Validate required top-level keys presence (values may be null)
                 missing_after = self._validate_required_fields(extracted_raw)
                 if missing_after:
@@ -997,11 +1024,20 @@ class LangGraphHingeAgent:
             # Evaluate core fields for scoring modifiers (Home town, Job title, University)
             eval_result = {}
             try:
+                t0_eval = time.perf_counter()
                 eval_result = evaluate_profile_fields(extracted_profile, model=getattr(self.config, "extraction_model", "gpt-5"))
+                try:
+                    timings["profile_eval_ms"] = int((time.perf_counter() - t0_eval) * 1000)
+                except Exception:
+                    pass
             except Exception as _e:
                 print(f"⚠️ profile_eval exception: {_e}")
 
             current_screenshot = all_screenshots[-1] if all_screenshots else state['current_screenshot']
+            try:
+                timings["scan_total_ms"] = int((time.perf_counter() - t_scan_start) * 1000)
+            except Exception:
+                pass
             return {
                 **state,
                 "current_screenshot": current_screenshot,
@@ -1013,6 +1049,7 @@ class LangGraphHingeAgent:
                 "llm_batch_request": llm_payload,
                 "cv_biometrics": (cv_result.get("biometrics", {}) if isinstance(cv_result, dict) else {}),
                 "cv_biometrics_timing": (cv_result.get("timing", {}) if isinstance(cv_result, dict) else {}),
+                "timings": timings,
                 "last_action": "analyze_profile",
                 "action_successful": True
             }
@@ -2644,11 +2681,46 @@ class LangGraphHingeAgent:
                     "screenshot_path": screenshot_path or "",
                     "errors_encountered": state.get("errors_encountered", 0),
                 }
-                self.exporter.append_row({
+                t0_exp = time.perf_counter()
+                pid = self.exporter.append_row({
                     "extracted_profile": extracted,
                     "metadata": metadata,
                     "analysis": analysis
                 })
+                export_db_ms = int((time.perf_counter() - t0_exp) * 1000)
+                opener_ms = 0
+                try:
+                    t0_op = time.perf_counter()
+                    run_opening_style(profile_id=pid)
+                    opener_ms = int((time.perf_counter() - t0_op) * 1000)
+                except Exception as _e:
+                    print(f"[opener] failed: {_e}")
+                # Consolidated timings summary (print once per profile)
+                try:
+                    tdict = dict(state.get("timings", {})) if isinstance(state.get("timings", {}), dict) else {}
+                    tdict["export_db_ms"] = export_db_ms
+                    tdict["opener_ms"] = opener_ms
+                    order = [
+                        ("scan_total_ms", "scan_total"),
+                        ("vertical_settle_scroll_ms", "vertical_settle_scroll"),
+                        ("sweep_y_ms", "sweep_y"),
+                        ("horizontal_cv_ocr_ms", "horizontal_cv_ocr"),
+                        ("vertical_paging_ms", "vertical_paging"),
+                        ("payload_prep_ms", "payload_prep"),
+                        ("extraction_llm_ms", "extraction_llm"),
+                        ("profile_eval_ms", "profile_eval"),
+                        ("export_db_ms", "export_db"),
+                        ("opener_ms", "opener"),
+                    ]
+                    print("TIMINGS (ms)")
+                    for k, label in order:
+                        if k in tdict:
+                            try:
+                                print(f"- {label}: {int(tdict[k])}")
+                            except Exception:
+                                print(f"- {label}: {tdict[k]}")
+                except Exception:
+                    pass
                 return
 
             # Helpers
@@ -2753,7 +2825,42 @@ class LangGraphHingeAgent:
                 "extraction_failed": 1 if state.get("extraction_failed") else 0,
             })
 
-            self.exporter.append_row(row)
+            t0_exp2 = time.perf_counter()
+            pid = self.exporter.append_row(row)
+            export_db_ms2 = int((time.perf_counter() - t0_exp2) * 1000)
+            opener_ms2 = 0
+            try:
+                t0_op2 = time.perf_counter()
+                run_opening_style(profile_id=pid)
+                opener_ms2 = int((time.perf_counter() - t0_op2) * 1000)
+            except Exception as _e:
+                print(f"[opener] failed: {_e}")
+            # Consolidated timings summary (print once per profile)
+            try:
+                tdict = dict(state.get("timings", {})) if isinstance(state.get("timings", {}), dict) else {}
+                tdict["export_db_ms"] = export_db_ms2
+                tdict["opener_ms"] = opener_ms2
+                order = [
+                    ("scan_total_ms", "scan_total"),
+                    ("vertical_settle_scroll_ms", "vertical_settle_scroll"),
+                    ("sweep_y_ms", "sweep_y"),
+                    ("horizontal_cv_ocr_ms", "horizontal_cv_ocr"),
+                    ("vertical_paging_ms", "vertical_paging"),
+                    ("payload_prep_ms", "payload_prep"),
+                    ("extraction_llm_ms", "extraction_llm"),
+                    ("profile_eval_ms", "profile_eval"),
+                    ("export_db_ms", "export_db"),
+                    ("opener_ms", "opener"),
+                ]
+                print("TIMINGS (ms)")
+                for k, label in order:
+                    if k in tdict:
+                        try:
+                            print(f"- {label}: {int(tdict[k])}")
+                        except Exception:
+                            print(f"- {label}: {tdict[k]}")
+            except Exception:
+                pass
         except Exception as e:
             print(f"⚠️  Export row failed: {e}")
 

@@ -184,6 +184,152 @@ def build_profile_eval_prompt(home_town: str, job_title: str, university: str) -
     return "".join(parts)
 
 
+# System prompt for choosing opener style; JSON-only response required.
+OPENING_STYLE_SYSTEM_PROMPT = (
+    "You are a dating‑opener strategist. Given a structured profile, choose the best opener style and explain why. "
+    "Ground your reasoning in the provided text and photo descriptions. Be specific, concise, and practical.\n\n"
+    "Task\n"
+    "Pick the single primary_style from this set:\n"
+    "[flirty, complimentary, playful_witty, observational, shared_interest, genuinely_warm, relationship_forward]\n\n"
+    "Provide style_weights for all styles (0–1, sum to 1).\n"
+    "Give an overall_confidence (0–1).\n"
+    "Provide a short rationale (≤120 words) citing the exact hooks you used (prompts, phrases, or photo details).\n"
+    "Extract personalisation_hooks: 2–3 short bullets (max 12 words each) that an opener can reference.\n"
+    "Provide what_to_avoid: 2 short bullets if relevant (e.g., sensitive topics).\n\n"
+    "Output (JSON only)\n"
+    "{\n"
+    '  "primary_style": "observational",\n'
+    '  "style_weights": {\n'
+    '    "flirty": 0.25,\n'
+    '    "complimentary": 0.10,\n'
+    '    "playful_witty": 0.20,\n'
+    '    "observational": 0.25,\n'
+    '    "shared_interest": 0.10,\n'
+    '    "genuinely_warm": 0.05,\n'
+    '    "relationship_forward": 0.05\n'
+    "  },\n"
+    '  "overall_confidence": 0.74,\n'
+    '  "rationale": "Grounded, specific explanation referencing profile prompts/photos.",\n'
+    '  "personalisation_hooks": ["example hook 1", "example hook 2", "example hook 3"],\n'
+    '  "what_to_avoid": ["optional note 1", "optional note 2"]\n'
+    "}\n\n"
+    "Scoring guidance (internal)\n"
+    "Increase flirty if there is playful self‑disclosure, confident photos, or romantic cues.\n"
+    "Increase observational when there are vivid visual elements, props, or situational prompts.\n"
+    "Increase playful_witty when humour, irony, or quirky self‑awareness appears.\n"
+    "Increase shared_interest when hobbies, venues, or travel stories are explicit.\n"
+    "Increase relationship_forward when long‑term intent or value alignment is clearly stated.\n"
+    "Lower scores for styles that clash with tone or content.\n"
+    "Keep overall_confidence moderate when signals are mixed or sparse."
+)
+
+
+def _line(label: str, value: str) -> str:
+    v = (value or "").strip()
+    return f"{label}: {v}" if v else ""
+
+
+def render_opening_style_user_message(profile: dict) -> str:
+    """
+    Render the user message using ONLY separate lines (no combined fields).
+    Use normal dashes for prompt/answer joins if needed; however, prompts and answers
+    are rendered as separate lines to avoid combining.
+    Only non‑empty values are included.
+    """
+    p = profile or {}
+
+    # Height formatting (from Height_cm)
+    height_cm = p.get("Height_cm")
+    height_str = ""
+    try:
+        if height_cm is not None and str(height_cm).strip() != "":
+            height_val = int(float(height_cm))
+            if height_val > 0:
+                height_str = f"{height_val} cm"
+    except Exception:
+        pass
+
+    lines = []
+    lines.append("Profile:")
+
+    # Core identity
+    for (label, key) in [
+        ("Name", "Name"),
+        ("Age", "Age"),
+        ("Gender", "Gender"),
+        ("Sexuality", "Sexuality"),
+        ("Location", "Location"),
+        ("Home town", "Home_town"),
+        ("Ethnicity", "Ethnicity"),
+        ("Job title", "Job_title"),
+        ("University", "University"),
+        ("Religious beliefs", "Religious_Beliefs"),
+        ("Politics", "Politics"),
+        ("Languages spoken", "Languages_spoken"),
+        ("Dating intention", "Dating_Intentions"),
+        ("Relationship type", "Relationship_type"),
+        ("Drinking", "Drinking"),
+        ("Smoking", "Smoking"),
+        ("Marijuana", "Marijuana"),
+        ("Drugs", "Drugs"),
+        ("Children", "Children"),
+        ("Family plans", "Family_plans"),
+        ("Pets", "Pets"),
+    ]:
+        line = _line(label, str(p.get(key, "")).strip())
+        if line:
+            lines.append(line)
+
+    # Height as its own line
+    if height_str:
+        lines.append(f"Height: {height_str}")
+
+    # Prompts & answers: assume present; include light safeguard
+    lines.append("Prompts & answers:")
+    for i in (1, 2, 3):
+        prompt_i = str(p.get(f"prompt_{i}", "") or "").strip()
+        answer_i = str(p.get(f"answer_{i}", "") or "").strip()
+        if prompt_i:
+            lines.append(f"prompt_{i}: {prompt_i}")
+        if answer_i:
+            lines.append(f"answer_{i}: {answer_i}")
+
+    # Other text
+    other_text = (p.get("Other_text") or "").strip()
+    if other_text:
+        lines.append(f"Other text: {other_text}")
+
+    # Photo/context bullets
+    photo_keys = [
+        ("Photo1", "Photo1_desc"),
+        ("Photo2", "Photo2_desc"),
+        ("Photo3", "Photo3_desc"),
+        ("Photo4", "Photo4_desc"),
+        ("Photo5", "Photo5_desc"),
+        ("Photo6", "Photo6_desc"),
+    ]
+    any_photos = any((p.get(k) or "").strip() for _, k in photo_keys)
+    if any_photos:
+        lines.append("Photo/context (short bullet summaries):")
+        for label, key in photo_keys:
+            desc = (p.get(key) or "").strip()
+            if desc:
+                lines.append(f"{label}: {desc}")
+
+    # Media summary
+    media = (p.get("Media_description") or "").strip()
+    if media:
+        lines.append(f"Media summary: {media}")
+
+    return "\n".join(lines)
+
+
+def build_opening_style_prompts(profile: dict) -> tuple[str, str]:
+    """
+    Returns (system, user) prompts for the opening‑style request.
+    """
+    return OPENING_STYLE_SYSTEM_PROMPT, render_opening_style_user_message(profile)
+
 
 if __name__ == "__main__":
     # For quick verification
