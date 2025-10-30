@@ -1,10 +1,9 @@
-# app/langgraph_hinge_agent.py
+# app/hinge_agent.py
 
 import json
 import time
 import uuid
 from typing import Dict, Any, Optional, TypedDict
-from langgraph.graph import StateGraph, END
 import base64
 from openai import OpenAI
 import os
@@ -82,7 +81,7 @@ class HingeAgentState(TypedDict):
     ai_reasoning: str
     next_tool_suggestion: str
     
-    # Batch processing for LangGraph recursion limit management
+    # Batch processing for agent recursion limit management
     batch_start_index: int
 
     # Future: prebuilt LLM batch request (no submission performed)
@@ -122,9 +121,9 @@ def gated_step(func):
     return wrapper
 
 
-class LangGraphHingeAgent:
+class HingeAgent:
     """
-    LangGraph-powered Hinge automation agent with AI-controlled decision making.
+    Hinge automation agent with AI-controlled decision making.
     Replaces agent controller with improved workflow management.
     """
     
@@ -134,7 +133,7 @@ class LangGraphHingeAgent:
         self.max_profiles = max_profiles
         self.config = config or DEFAULT_CONFIG
         self.ai_client = None
-        self.graph = self._build_workflow()
+        self.graph = None
         # Cached UI coords
         self._tick_coords = None
         self._dislike_coords = None
@@ -150,7 +149,7 @@ class LangGraphHingeAgent:
         if getattr(self.config, "ai_trace", False):
             self._init_ai_trace_logging()
         
-        # Profile batch processing to avoid LangGraph recursion limits
+        # Profile batch processing to avoid recursion limits
         self.profiles_per_batch = 3  # Process 3 profiles per batch to stay under 25-turn limit
         self.max_turns_per_profile = 8  # Estimated max turns needed per profile
 
@@ -242,10 +241,9 @@ class LangGraphHingeAgent:
             for l in out_lines:
                 print(l)
 
-    def _build_workflow(self) -> StateGraph:
-        """Build the LangGraph workflow with AI-controlled decision making"""
-        
-        workflow = StateGraph(HingeAgentState)
+    def _build_workflow(self):
+        """Removed: graph workflow purged; returning None to preserve API surface."""
+        return None
         
         # Add all workflow nodes
         workflow.add_node("initialize_session", self.initialize_session_node)
@@ -340,7 +338,7 @@ class LangGraphHingeAgent:
     @gated_step
     def initialize_session_node(self, state: HingeAgentState) -> HingeAgentState:
         """Initialize the automation session"""
-        print("🚀 Initializing LangGraph Hinge automation session...")
+        print("🚀 Initializing Hinge automation session...")
         # Gate console/CV verbosity via env based on config.verbose_logging
         try:
             verbose_flag = "1" if getattr(self.config, "verbose_logging", False) else "0"
@@ -514,7 +512,7 @@ class LangGraphHingeAgent:
                     _sz = "?"
                 self._ai_trace_log([
                     "AI_REQ call_id=ai_decide_action model=gpt-5-mini ts_request={}".format(datetime.now().isoformat(timespec="seconds")),
-                    "PROMPT_REF=langgraph_hinge_agent.ai_decide_action_node",
+                    "PROMPT_REF=hinge_agent.ai_decide_action_node",
                     f"IMAGE image_path={state['current_screenshot']} image_size={_sz} bytes"
                 ])
             else:
@@ -531,7 +529,7 @@ class LangGraphHingeAgent:
                 messages = [{"role": "user", "content": prompt}]
                 self._ai_trace_log([
                     "AI_REQ call_id=ai_decide_action model=gpt-5-mini ts_request={}".format(datetime.now().isoformat(timespec="seconds")),
-                    "PROMPT_REF=langgraph_hinge_agent.ai_decide_action_node",
+                    "PROMPT_REF=hinge_agent.ai_decide_action_node",
                 ])
             
             t0 = time.perf_counter()
@@ -617,7 +615,7 @@ class LangGraphHingeAgent:
         
         screenshot_path = capture_screenshot(
             state["device"],
-            f"profile_{state['current_profile_index']}_langgraph"
+            f"profile_{state['current_profile_index']}_agent"
         )
         
         return {
@@ -729,7 +727,7 @@ class LangGraphHingeAgent:
                 _sz = "?"
             self._ai_trace_log([
                 "AI_REQ call_id=extract_user_content_only model=gpt-5-mini ts_request={}".format(datetime.now().isoformat(timespec="seconds")),
-                "PROMPT_REF=langgraph_hinge_agent._extract_user_content_only",
+                "PROMPT_REF=hinge_agent._extract_user_content_only",
                 f"IMAGE image_path={screenshot_path} image_size={_sz} bytes"
             ])
             client = self.ai_client or OpenAI()
@@ -918,8 +916,8 @@ class LangGraphHingeAgent:
                     images_for_llm.append(stitched_path)
                     self._debug(f"📦 Added stitched horizontal carousel: {stitched_path}")
 
-                # Include top-of-profile screenshot (startup_precheck or langgraph)
-                top_candidates = [p for p in all_screenshots if ("startup_precheck" in p or "langgraph" in p)]
+                # Include top-of-profile screenshot (startup_precheck or agent)
+                top_candidates = [p for p in all_screenshots if ("startup_precheck" in p or "agent" in p)]
                 if top_candidates:
                     top_path = top_candidates[0]
                     images_for_llm.insert(0, top_path)
@@ -1445,7 +1443,7 @@ class LangGraphHingeAgent:
             content_parts = [{"type": "text", "text": prompt}]
             trace_lines = [
                 "AI_REQ call_id=analyze_complete_profile model=gpt-5-mini ts_request={}".format(datetime.now().isoformat(timespec="seconds")),
-                "PROMPT_REF=langgraph_hinge_agent._analyze_complete_profile",
+                "PROMPT_REF=hinge_agent._analyze_complete_profile",
                 f"IMAGES count={len(screenshots)}"
             ]
             for p in screenshots:
@@ -2005,7 +2003,7 @@ class LangGraphHingeAgent:
             comment_id=comment_id,
             profile_text=state['profile_text'],
             generated_comment=comment,
-            style_used="langgraph_flirty_contextual"
+            style_used="hinge_flirty_contextual"
         )
         
         print(f"💋 Generated flirty comment: {comment[:60]}...")
@@ -3311,11 +3309,8 @@ class LangGraphHingeAgent:
         }
     
     def run_automation(self) -> Dict[str, Any]:
-        """Run the complete LangGraph automation workflow with batch processing"""
-        # Deterministic mode: use flowchart runner instead of AI planner
-        if getattr(self.config, "deterministic_mode", True):
-            return self._run_automation_deterministic()
-        print("🚀 Starting LangGraph-powered Hinge automation with batch processing...")
+        """Run the complete automation workflow (deterministic)"""
+        return self._run_automation_deterministic()
         print(f"📊 Processing {self.max_profiles} profiles in batches of {self.profiles_per_batch}")
         
         # Initialize cumulative results
@@ -3378,7 +3373,7 @@ class LangGraphHingeAgent:
             
             # Execute batch workflow
             try:
-                print(f"⚡ Executing LangGraph workflow for batch {batch_num + 1}")
+                print(f"⚡ Executing agent workflow for batch {batch_num + 1}")
                 batch_final_state = self.graph.invoke(batch_state)
                 
                 # Update persistent device state for next batch
@@ -3430,6 +3425,6 @@ class LangGraphHingeAgent:
 
 # Usage example for testing
 if __name__ == "__main__":
-    agent = LangGraphHingeAgent(max_profiles=5)
+    agent = HingeAgent(max_profiles=5)
     result = agent.run_automation()
     print(f"🎯 Automation completed: {result}")

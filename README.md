@@ -86,14 +86,12 @@ Outputs
 Architecture
 - Entry point: app/main_agent.py
   - Parses CLI flags, loads AgentConfig, and launches the orchestrator.
-- Orchestration (state machine): app/langgraph_hinge_agent.py
-  - Manages session state and routes actions through nodes:
-    - initialize_session → capture_screenshot → analyze_profile → scroll_profile
+- Orchestrator: app/hinge_agent.py
+    - initialize_session → capture_screenshot → analyze_profile
     - make_like_decision → detect_like_button → execute_like
     - send_comment_with_typing / send_like_without_comment
     - navigate_to_next → verify_profile_change → finalize_session
     - recover_from_stuck and reset_app for resilience
-  - Supports deterministic flow as well as an alternative routing mode.
 - Computer vision & device I/O: app/helper_functions.py
   - Template matching for UI elements (like/send/comment field)
   - ADB wrappers for taps, swipes, keyboard input, and app lifecycle
