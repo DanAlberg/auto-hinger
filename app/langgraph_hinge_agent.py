@@ -12,10 +12,12 @@ import shutil
 from datetime import datetime
 from functools import wraps
 
+from text_utils import normalize_dashes
+
 from helper_functions import (
     connect_device, get_screen_resolution, open_hinge, reset_hinge_app,
     capture_screenshot, tap, tap_with_confidence, swipe,
-    dismiss_keyboard, clear_screenshots_directory, clear_submitted_directory, detect_like_button_cv, detect_send_button_cv, detect_comment_field_cv, detect_keyboard_tick_cv, detect_age_icon_cv, detect_age_icon_cv_multi, detect_age_row_dual_templates, infer_carousel_y_by_edges, are_images_similar, are_images_similar_roi, input_text_robust
+    clear_screenshots_directory, clear_submitted_directory, detect_dislike_button_cv, detect_age_icon_cv, detect_age_icon_cv_multi, detect_age_row_dual_templates, infer_carousel_y_by_edges, are_images_similar, are_images_similar_roi, input_text_robust, verify_profile_change_ahash
 )
 from analyzer import (
     extract_text_from_image, analyze_dating_ui,
@@ -27,6 +29,7 @@ from data_store import store_generated_comment, calculate_template_success_rates
 from prompt_engine import update_template_weights
 from profile_export import ProfileExporter
 from profile_eval import evaluate_profile_fields, compute_profile_score
+from sqlite_store import update_profile_llm_metrics
 import hashlib
 from cv_biometrics import extract_biometrics_from_carousel
 
@@ -105,20 +108,7 @@ def gated_step(func):
                 f"comments={state.get('comments_sent', 0)} "
                 f"errors={state.get('errors_encountered', 0)}"
             )
-            # Ask for confirmation
-            confirmed = self._confirm_step(step_name, state)
-            if not confirmed:
-                aborted = {
-                    **state,
-                    "should_continue": False,
-                    "completion_reason": f"User aborted at {step_name}",
-                    "last_action": step_name,
-                    "action_successful": False
-                }
-                if step_name == "ai_decide_action_node":
-                    aborted["next_tool_suggestion"] = "finalize"
-                self._log(f"ABORTED {step_name}")
-                return aborted
+            # Manual confirm now handled only inside irreversible steps (like/dislike)
         # Execute actual step
         result = func(self, state)
         if getattr(self.config, "manual_confirm", False):
@@ -147,12 +137,13 @@ class LangGraphHingeAgent:
         self.graph = self._build_workflow()
         # Cached UI coords
         self._tick_coords = None
+        self._dislike_coords = None
 
         # Manual confirm logging path
         self.manual_log_path = None
         if getattr(self.config, "manual_confirm", False):
             self._init_manual_logging()
-            self._log("Manual confirmation mode enabled; every step requires approval and is logged.")
+            self._log("Manual confirmation enabled; irreversible taps (LIKE/DISLIKE) require approval; steps are logged.")
 
         # AI trace setup
         self.ai_trace_file = None
@@ -195,6 +186,19 @@ class LangGraphHingeAgent:
                     f.write(line + "\n")
         except Exception as e:
             print(f"[manual] Failed to write log: {e}")
+
+    def _debug(self, message: str) -> None:
+        """Emit detailed diagnostics only when verbose_logging=True."""
+        if getattr(self.config, "verbose_logging", False):
+            print(message)
+
+    def _info(self, message: str) -> None:
+        """Always print important one-line milestones."""
+        print(message)
+
+    def _error(self, message: str) -> None:
+        """Always print errors."""
+        print(message)
 
     def _confirm_step(self, step_name: str, state: HingeAgentState) -> bool:
         """Prompt for user confirmation to proceed with a step. Default is No."""
@@ -250,11 +254,6 @@ class LangGraphHingeAgent:
         workflow.add_node("analyze_profile", self.analyze_profile_node)
         workflow.add_node("scroll_profile", self.scroll_profile_node)
         workflow.add_node("make_like_decision", self.make_like_decision_node)
-        workflow.add_node("detect_like_button", self.detect_like_button_node)
-        workflow.add_node("execute_like", self.execute_like_node)
-        workflow.add_node("generate_comment", self.generate_comment_node)
-        workflow.add_node("send_comment_with_typing", self.send_comment_with_typing_node)
-        workflow.add_node("send_like_without_comment", self.send_like_without_comment_node)
         workflow.add_node("execute_dislike", self.execute_dislike_node)
         workflow.add_node("navigate_to_next", self.navigate_to_next_node)
         workflow.add_node("verify_profile_change", self.verify_profile_change_node)
@@ -283,11 +282,6 @@ class LangGraphHingeAgent:
                 "analyze_profile": "analyze_profile",
                 "scroll_profile": "scroll_profile",
                 "make_like_decision": "make_like_decision",
-                "detect_like_button": "detect_like_button",
-                "execute_like": "execute_like",
-                "generate_comment": "generate_comment",
-                "send_comment_with_typing": "send_comment_with_typing",
-                "send_like_without_comment": "send_like_without_comment",
                 "execute_dislike": "execute_dislike",
                 "navigate_to_next": "navigate_to_next",
                 "verify_profile_change": "verify_profile_change",
@@ -300,7 +294,6 @@ class LangGraphHingeAgent:
         # Add edges back to AI decision node from all action nodes
         action_nodes = [
             "capture_screenshot", "analyze_profile", "scroll_profile", "make_like_decision",
-            "detect_like_button", "execute_like", "generate_comment", "send_comment_with_typing", "send_like_without_comment",
             "execute_dislike", "navigate_to_next", "verify_profile_change", "recover_from_stuck", "reset_app"
         ]
         
@@ -348,9 +341,11 @@ class LangGraphHingeAgent:
     def initialize_session_node(self, state: HingeAgentState) -> HingeAgentState:
         """Initialize the automation session"""
         print("🚀 Initializing LangGraph Hinge automation session...")
-        # Gate CV per-template debug overlays when verbose logging
+        # Gate console/CV verbosity via env based on config.verbose_logging
         try:
-            os.environ["HINGE_CV_DEBUG_MODE"] = "1" if getattr(self.config, "verbose_logging", False) else "0"
+            verbose_flag = "1" if getattr(self.config, "verbose_logging", False) else "0"
+            os.environ["HINGE_CV_DEBUG_MODE"] = verbose_flag
+            os.environ["HINGE_VERBOSE_LOGGING"] = verbose_flag
         except Exception:
             pass
         
@@ -373,29 +368,7 @@ class LangGraphHingeAgent:
         open_hinge(device)
         time.sleep(5)
 
-        # Startup pre-check: ensure we are at top of profile feed (like button visible)
-        try:
-            start_screenshot = capture_screenshot(device, "startup_precheck")
-            pre_like = detect_like_button_cv(start_screenshot)
-            if self.config.precheck_strict and not pre_like.get('found', False):
-                print("❌ Startup pre-check failed: like button not visible. Please navigate to the top of the profile feed (first card visible) and re-run.")
-                return {
-                    **state,
-                    "should_continue": False,
-                    "completion_reason": "Startup pre-check failed: not at top of profile feed",
-                    "last_action": "initialize_session",
-                    "action_successful": False
-                }
-        except Exception as _e:
-            if self.config.precheck_strict:
-                print(f"❌ Startup pre-check error: {_e}")
-                return {
-                    **state,
-                    "should_continue": False,
-                    "completion_reason": "Startup pre-check error",
-                    "last_action": "initialize_session",
-                    "action_successful": False
-                }
+        # Startup pre-check removed for current LIKE-less flow
 
         # Update template weights
         success_rates = calculate_template_success_rates()
@@ -437,7 +410,7 @@ class LangGraphHingeAgent:
     @gated_step
     def ai_decide_action_node(self, state: HingeAgentState) -> HingeAgentState:
         """Ask AI to analyze current state and decide next action"""
-        print(f"🤖 Asking AI for next action (Profile {state['current_profile_index'] + 1}/{state['max_profiles']})")
+        self._debug(f"🤖 Asking AI for next action (Profile {state['current_profile_index'] + 1}/{state['max_profiles']})")
         
         # Prepare context for AI
         gc_present = bool(state.get('generated_comment'))
@@ -540,10 +513,8 @@ class LangGraphHingeAgent:
                 except Exception:
                     _sz = "?"
                 self._ai_trace_log([
-                    "AI_CALL call_id=ai_decide_action model=gpt-5-mini temperature=0.0 response_format=json_object",
-                    "PROMPT=<<<BEGIN",
-                    *prompt.splitlines(),
-                    "<<<END",
+                    "AI_REQ call_id=ai_decide_action model=gpt-5-mini ts_request={}".format(datetime.now().isoformat(timespec="seconds")),
+                    "PROMPT_REF=langgraph_hinge_agent.ai_decide_action_node",
                     f"IMAGE image_path={state['current_screenshot']} image_size={_sz} bytes"
                 ])
             else:
@@ -559,10 +530,8 @@ class LangGraphHingeAgent:
                 
                 messages = [{"role": "user", "content": prompt}]
                 self._ai_trace_log([
-                    "AI_CALL call_id=ai_decide_action model=gpt-5-mini temperature=0.0 response_format=json_object",
-                    "PROMPT=<<<BEGIN",
-                    *prompt.splitlines(),
-                    "<<<END",
+                    "AI_REQ call_id=ai_decide_action model=gpt-5-mini ts_request={}".format(datetime.now().isoformat(timespec="seconds")),
+                    "PROMPT_REF=langgraph_hinge_agent.ai_decide_action_node",
                 ])
             
             t0 = time.perf_counter()
@@ -575,7 +544,7 @@ class LangGraphHingeAgent:
             )
             dt_ms = int((time.perf_counter() - t0) * 1000)
             try:
-                print(f"[AI] ai_decide_action model=gpt-5-mini duration={dt_ms}ms")
+                self._debug(f"[AI] ai_decide_action model=gpt-5-mini duration={dt_ms}ms")
             except Exception:
                 pass
             self._ai_trace_log([f"AI_TIME call_id=ai_decide_action model=gpt-5-mini duration_ms={dt_ms}"])
@@ -583,6 +552,15 @@ class LangGraphHingeAgent:
             decision = json.loads(resp.choices[0].message.content) if resp.choices[0].message and resp.choices[0].message.content else {}
             next_action = decision.get('next_action', 'capture_screenshot')
             reasoning = decision.get('reasoning', 'Default action')
+            try:
+                self._ai_trace_log([
+                    "AI_RESP call_id=ai_decide_action model=gpt-5-mini ts_response={}".format(datetime.now().isoformat(timespec="seconds")),
+                    "OUTPUT=<<<BEGIN_JSON",
+                    *json.dumps(decision, ensure_ascii=False, indent=2).splitlines(),
+                    "<<<END_JSON",
+                ])
+            except Exception:
+                pass
 
             # Enforce preconditions deterministically (Hybrid Option B)
             # - If comment interface is open and no generated comment: must generate_comment
@@ -607,8 +585,8 @@ class LangGraphHingeAgent:
                     self._log("Precondition enforcement: 'send_comment_with_typing' chosen but modal is not open → forcing 'execute_like'.")
                     next_action = "execute_like"
             
-            print(f"🎯 AI chose: {next_action}")
-            print(f"💭 Reasoning: {reasoning}")
+            self._debug(f"🎯 AI chose: {next_action}")
+            self._debug(f"💭 Reasoning: {reasoning}")
             
             return {
                 **state,
@@ -635,7 +613,7 @@ class LangGraphHingeAgent:
     @gated_step
     def capture_screenshot_node(self, state: HingeAgentState) -> HingeAgentState:
         """Capture current screen screenshot"""
-        print("📸 Capturing screenshot...")
+        self._debug("📸 Capturing screenshot...")
         
         screenshot_path = capture_screenshot(
             state["device"],
@@ -652,7 +630,7 @@ class LangGraphHingeAgent:
     @gated_step
     def analyze_profile_node(self, state: HingeAgentState) -> HingeAgentState:
         """Comprehensive profile analysis with new full scrape (horizontal + vertical)"""
-        print("🔍 Starting comprehensive profile analysis (new full scrape)...")
+        self._debug("🔍 Starting comprehensive profile analysis (new full scrape)...")
         return self._analyze_profile_full_scrape(state)
         
         # Collect multiple screenshots by scrolling through the profile
@@ -750,10 +728,8 @@ class LangGraphHingeAgent:
             except Exception:
                 _sz = "?"
             self._ai_trace_log([
-                "AI_CALL call_id=extract_user_content_only model=gpt-5-mini temperature=0.0",
-                "PROMPT=<<<BEGIN",
-                *prompt.splitlines(),
-                "<<<END",
+                "AI_REQ call_id=extract_user_content_only model=gpt-5-mini ts_request={}".format(datetime.now().isoformat(timespec="seconds")),
+                "PROMPT_REF=langgraph_hinge_agent._extract_user_content_only",
                 f"IMAGE image_path={screenshot_path} image_size={_sz} bytes"
             ])
             client = self.ai_client or OpenAI()
@@ -769,7 +745,20 @@ class LangGraphHingeAgent:
                 }]
             )
             
-            return (resp.choices[0].message.content or "").strip()
+            content = (resp.choices[0].message.content or "")
+            # LLM: Profile Scrape (content-only) — normalize output
+            content = normalize_dashes(content)
+            _out = content.strip()
+            try:
+                self._ai_trace_log([
+                    "AI_RESP call_id=extract_user_content_only model=gpt-5-mini ts_response={}".format(datetime.now().isoformat(timespec="seconds")),
+                    "OUTPUT=<<<BEGIN_TEXT",
+                    *_out.splitlines(),
+                    "<<<END_TEXT",
+                ])
+            except Exception:
+                pass
+            return _out
             
         except Exception as e:
             print(f"❌ Error extracting user content: {e}")
@@ -838,7 +827,7 @@ class LangGraphHingeAgent:
             
             # Detect age icon Y for horizontal carousel:
             # Try early frames first (pre-scroll), then post_full_scroll (each with its own adaptive seek)
-            print(f"SWEEP_START image={os.path.basename(post_full_scroll)}")
+            self._debug(f"SWEEP_START image={os.path.basename(post_full_scroll)}")
             t0_sweep = time.perf_counter()
             sweep = self._sweep_icons_find_y(state, start_image=post_full_scroll)
             try:
@@ -849,7 +838,7 @@ class LangGraphHingeAgent:
                 y_horizontal = int(sweep["y"])
                 pages = int(sweep.get("pages_scanned", 0))
                 img_used = sweep.get("image_used", "")
-                print(f"✅ Carousel Y determined at {y_horizontal} (method={sweep.get('method','sweep_dual')}, pages_scanned={pages}, image_used={os.path.basename(img_used) if img_used else ''})")
+                self._debug(f"✅ Carousel Y determined at {y_horizontal} (method={sweep.get('method','sweep_dual')}, pages_scanned={pages}, image_used={os.path.basename(img_used) if img_used else ''})")
             else:
                 print("❌ Could not determine horizontal carousel Y after sweep (high-threshold dual-template).")
                 return {
@@ -861,7 +850,7 @@ class LangGraphHingeAgent:
             
             # Skip upstream horizontal stabilization; start CV immediately after Y
             try:
-                print("⛔ Skipping pre-swipe; starting CV loop immediately.")
+                self._debug("⛔ Skipping pre-swipe; starting CV loop immediately.")
             except Exception:
                 pass
 
@@ -883,9 +872,9 @@ class LangGraphHingeAgent:
                         y_override=int(y_horizontal),
                     )
                     try:
-                        print(f"[CV_OCR] biometrics={cv_result.get('biometrics', {})}")
+                        self._debug(f"[CV_OCR] biometrics={cv_result.get('biometrics', {})}")
                         if bool(getattr(self.config, "verbose_cv_timing", False)):
-                            print(f"[CV_OCR] timing={cv_result.get('timing', {})}")
+                            self._debug(f"[CV_OCR] timing={cv_result.get('timing', {})}")
                     except Exception:
                         pass
                 except Exception as _e:
@@ -900,10 +889,12 @@ class LangGraphHingeAgent:
             except Exception:
                 pass
             all_screenshots.extend(vshots)
+            # Derive bottom-of-profile frame for aHash verification
+            bottom_path = vshots[-1] if vshots else post_full_scroll
             
             # Analyze once with all unique screenshots (no interim AI calls)
             combined_text = ""
-            print(f"🖼️ Unique screenshots collected: {len(all_screenshots)}")
+            self._debug(f"🖼️ Unique screenshots collected: {len(all_screenshots)}")
             # Build and SUBMIT reusable batch payload for LLM extraction (OpenAI format)
             extracted_profile: Dict[str, Any] = {}
             extraction_failed = False
@@ -925,27 +916,27 @@ class LangGraphHingeAgent:
                 images_for_llm = []
                 if stitched_path and os.path.exists(stitched_path):
                     images_for_llm.append(stitched_path)
-                    print(f"📦 Added stitched horizontal carousel: {stitched_path}")
+                    self._debug(f"📦 Added stitched horizontal carousel: {stitched_path}")
 
                 # Include top-of-profile screenshot (startup_precheck or langgraph)
                 top_candidates = [p for p in all_screenshots if ("startup_precheck" in p or "langgraph" in p)]
                 if top_candidates:
                     top_path = top_candidates[0]
                     images_for_llm.insert(0, top_path)
-                    print(f"📦 Added top-of-profile screenshot: {top_path}")
+                    self._debug(f"📦 Added top-of-profile screenshot: {top_path}")
 
                 # Add all unique vertical pages after stitched image
                 images_for_llm.extend([p for p in all_screenshots if ("_vpage_" in p or "_post_full_scroll" in p)])
-                print(f"📦 LLM payload images (top + stitched + vertical): {len(images_for_llm)} total")
+                self._debug(f"📦 LLM payload images (top + stitched + vertical): {len(images_for_llm)} total")
 
                 # Use only the new structured profile prompt
                 from prompt_engine import build_structured_profile_prompt
                 llm_payload = build_llm_batch_payload(images_for_llm, prompt=build_structured_profile_prompt())
                 images_count = llm_payload.get("meta", {}).get("images_count", len(all_screenshots))
-                print(f"📦 LLM batch images: {images_count}")
-                print("📸 Images submitted to LLM:")
+                self._debug(f"📦 LLM batch images: {images_count}")
+                self._debug("📸 Images submitted to LLM:")
                 for img_path in images_for_llm:
-                    print(f"   - {os.path.abspath(img_path)}")
+                    self._debug(f"   - {os.path.abspath(img_path)}")
 
                 # Mirror the exact LLM payload images into images/submitted with friendly names
                 try:
@@ -973,7 +964,7 @@ class LangGraphHingeAgent:
                             shutil.copy2(stitched_src, dest)
                         except Exception as _e:
                             print(f"⚠️ Mirror copy (stitched) failed: {_e}")
-                    print(f"🗂️  Mirrored {idx}{' + stitched' if stitched_src else ''} image(s) to {os.path.abspath(dest_dir)}")
+                    self._debug(f"🗂️  Mirrored {idx}{' + stitched' if stitched_src else ''} image(s) to {os.path.abspath(dest_dir)}")
                 except Exception as _e:
                     print(f"⚠️ Mirror operation failed: {_e}")
 
@@ -986,6 +977,17 @@ class LangGraphHingeAgent:
                 extracted_raw = self._submit_llm_batch_request(llm_payload)
                 try:
                     timings["extraction_llm_ms"] = int((time.perf_counter() - t0_ext) * 1000)
+                except Exception:
+                    pass
+                # Capture LLM metrics for Profile Scrape
+                try:
+                    metrics_existing = dict(state.get("llm_metrics", {})) if isinstance(state.get("llm_metrics", {}), dict) else {}
+                    metrics_existing["profile_scrape"] = {
+                        "model": "gpt-5-mini",
+                        "duration_ms": int(timings.get("extraction_llm_ms", 0) or 0),
+                        "ts": datetime.now().isoformat(timespec="seconds")
+                    }
+                    state["llm_metrics"] = metrics_existing
                 except Exception:
                     pass
                 # Validate required top-level keys presence (values may be null)
@@ -1030,6 +1032,17 @@ class LangGraphHingeAgent:
                     timings["profile_eval_ms"] = int((time.perf_counter() - t0_eval) * 1000)
                 except Exception:
                     pass
+                # Capture LLM metrics for Eval
+                try:
+                    metrics_existing = dict(state.get("llm_metrics", {})) if isinstance(state.get("llm_metrics", {}), dict) else {}
+                    metrics_existing["eval"] = {
+                        "model": "gpt-5-mini",
+                        "duration_ms": int(timings.get("profile_eval_ms", 0) or 0),
+                        "ts": datetime.now().isoformat(timespec="seconds")
+                    }
+                    state["llm_metrics"] = metrics_existing
+                except Exception:
+                    pass
             except Exception as _e:
                 print(f"⚠️ profile_eval exception: {_e}")
 
@@ -1054,6 +1067,8 @@ class LangGraphHingeAgent:
             return {
                 **state,
                 "current_screenshot": current_screenshot,
+                "top_of_profile_path": start_shot,
+                "bottom_of_profile_path": bottom_path,
                 "profile_text": combined_text,
                 "profile_analysis": extracted_profile,
                 "extracted_profile": extracted_profile,
@@ -1063,6 +1078,7 @@ class LangGraphHingeAgent:
                 "llm_batch_request": llm_payload,
                 "cv_biometrics": (cv_result.get("biometrics", {}) if isinstance(cv_result, dict) else {}),
                 "cv_biometrics_timing": (cv_result.get("timing", {}) if isinstance(cv_result, dict) else {}),
+                "llm_metrics": (state.get("llm_metrics", {}) if isinstance(state.get("llm_metrics", {}), dict) else {}),
                 "timings": timings,
                 "last_action": "analyze_profile",
                 "action_successful": True
@@ -1293,10 +1309,10 @@ class LangGraphHingeAgent:
             # Apply tiny jitter: if swiping up (y1 > y2), nudge x2 right; if down, nudge left
             x2 = min(max(x + (jitter if sy2 < sy1 else -jitter), 0), width - 1)
             dur = max(300, int(duration_ms))
-            print(f"SWIPE_VERTICAL x1={x} x2={x2} y1={sy1} y2={sy2} duration={dur}ms")
+            self._debug(f"SWIPE_VERTICAL x1={x} x2={x2} y1={sy1} y2={sy2} duration={dur}ms")
             swipe(state["device"], x, sy1, x2, sy2, duration=dur)
         except Exception as e:
-            print(f"SWIPE_VERTICAL_FAILED: {e}")
+            self._debug(f"SWIPE_VERTICAL_FAILED: {e}")
             swipe(state["device"], x, y1, x, y2, duration=max(600, int(duration_ms)))
 
     def _collect_horizontal_content(self, state: HingeAgentState, y_coord: int) -> tuple[list, list]:
@@ -1314,9 +1330,9 @@ class LangGraphHingeAgent:
         band_ratio = float(getattr(cfg, "hscroll_hash_roi_ratio", 0.12))
         horizontal_ms = int(getattr(cfg, "horizontal_swipe_duration_ms", 600))
         
-        print(f"HSWIPE_SETUP x1={x1} x2={x2} y={y_coord} duration={horizontal_ms}ms")
+        self._debug(f"HSWIPE_SETUP x1={x1} x2={x2} y={y_coord} duration={horizontal_ms}ms")
         try:
-            print(f"HSWIPE_PARAMS hash_threshold={hash_thresh} stable_needed={stable_needed} hash_size={hash_size} band_ratio={band_ratio}")
+            self._debug(f"HSWIPE_PARAMS hash_threshold={hash_thresh} stable_needed={stable_needed} hash_size={hash_size} band_ratio={band_ratio}")
         except Exception:
             pass
         unique_shots: list[str] = []
@@ -1324,7 +1340,7 @@ class LangGraphHingeAgent:
         last_kept: str | None = None
         
         for i in range(1, max_swipes + 1):
-            print(f"HSWIPE_DO i={i}/{max_swipes} x1={x1} x2={x2} y={y_coord} duration={horizontal_ms}ms")
+            self._debug(f"HSWIPE_DO i={i}/{max_swipes} x1={x1} x2={x2} y={y_coord} duration={horizontal_ms}ms")
             swipe(device, x1, y_coord, x2, y_coord, duration=horizontal_ms)
             time.sleep(2)
             shot = capture_screenshot(device, f"profile_{state['current_profile_index']}_hscroll_{i}")
@@ -1335,11 +1351,11 @@ class LangGraphHingeAgent:
                 stable = 0
             else:
                 stable += 1
-                print(f"🟨 Horizontal duplicate detected ({stable}/{stable_needed})")
+                self._debug(f"🟨 Horizontal duplicate detected ({stable}/{stable_needed})")
             
             if stable >= stable_needed:
-                print(f"HSWIPE_STABLE repeats={stable} needed={stable_needed}")
-                print("✅ Horizontal frames stabilized; stopping horizontal swipes.")
+                self._debug(f"HSWIPE_STABLE repeats={stable} needed={stable_needed}")
+                self._debug("✅ Horizontal frames stabilized; stopping horizontal swipes.")
                 break
         
         return unique_shots, []
@@ -1360,7 +1376,7 @@ class LangGraphHingeAgent:
         last_kept: str | None = None
         
         for i in range(1, max_pages + 1):
-            print(f"📜 Vertical page {i}/{max_pages}")
+            self._debug(f"📜 Vertical page {i}/{max_pages}")
             sx = int(width * float(getattr(self.config, "vertical_swipe_x_pct", 0.12)))
             sy1 = int(height * 0.75)
             sy2 = int(height * 0.25)
@@ -1374,10 +1390,10 @@ class LangGraphHingeAgent:
                 stable = 0
             else:
                 stable += 1
-                print(f"🟨 Vertical duplicate detected ({stable}/{stable_needed})")
+                self._debug(f"🟨 Vertical duplicate detected ({stable}/{stable_needed})")
             
             if stable >= stable_needed:
-                print("✅ Vertical frames stabilized; stopping vertical paging.")
+                self._debug("✅ Vertical frames stabilized; stopping vertical paging.")
                 break
         
         return unique_shots, []
@@ -1428,10 +1444,8 @@ class LangGraphHingeAgent:
             # Build messages with all screenshots attached
             content_parts = [{"type": "text", "text": prompt}]
             trace_lines = [
-                "AI_CALL call_id=analyze_complete_profile model=gpt-5-mini temperature=0.0 response_format=json_object",
-                "PROMPT=<<<BEGIN",
-                *prompt.splitlines(),
-                "<<<END",
+                "AI_REQ call_id=analyze_complete_profile model=gpt-5-mini ts_request={}".format(datetime.now().isoformat(timespec="seconds")),
+                "PROMPT_REF=langgraph_hinge_agent._analyze_complete_profile",
                 f"IMAGES count={len(screenshots)}"
             ]
             for p in screenshots:
@@ -1455,15 +1469,26 @@ class LangGraphHingeAgent:
             )
             dt_ms = int((time.perf_counter() - t0) * 1000)
             try:
-                print(f"[AI] analyze_complete_profile model=gpt-5-mini images={len(screenshots)} duration={dt_ms}ms")
+                self._debug(f"[AI] analyze_complete_profile model=gpt-5-mini images={len(screenshots)} duration={dt_ms}ms")
             except Exception:
                 pass
             self._ai_trace_log([f"AI_TIME call_id=analyze_complete_profile model=gpt-5-mini images={len(screenshots)} duration_ms={dt_ms}"])
             try:
                 parsed = json.loads(resp.choices[0].message.content or "{}")
+                # LLM: Profile Scrape (analysis) — normalize output
+                parsed = normalize_dashes(parsed)
                 try:
-                    print("[AI JSON analyze_complete_profile]")
-                    print(json.dumps(parsed, indent=2)[:2000])
+                    self._ai_trace_log([
+                        "AI_RESP call_id=analyze_complete_profile model=gpt-5-mini ts_response={}".format(datetime.now().isoformat(timespec="seconds")),
+                        "OUTPUT=<<<BEGIN_JSON",
+                        *json.dumps(parsed, ensure_ascii=False, indent=2).splitlines(),
+                        "<<<END_JSON",
+                    ])
+                except Exception:
+                    pass
+                try:
+                    self._debug("[AI JSON analyze_complete_profile]")
+                    self._debug(json.dumps(parsed, indent=2)[:2000])
                 except Exception:
                     pass
                 return parsed
@@ -1518,7 +1543,7 @@ class LangGraphHingeAgent:
             )
             dt_ms = int((time.perf_counter() - t0) * 1000)
             try:
-                print(f"[AI] submit_batch model={model} messages={len(msgs)} duration={dt_ms}ms")
+                self._debug(f"[AI] submit_batch model={model} messages={len(msgs)} duration={dt_ms}ms")
             except Exception:
                 pass
             self._ai_trace_log([f"AI_TIME call_id=submit_batch model={model} messages={len(msgs)} duration_ms={dt_ms}"])
@@ -1552,6 +1577,17 @@ class LangGraphHingeAgent:
             # Validate required keys
             missing = self._validate_required_fields(result)
             if not missing:
+                # LLM: Profile Scrape (parser batch) — normalize output
+                result = normalize_dashes(result)
+                try:
+                    self._ai_trace_log([
+                        "AI_RESP call_id=submit_batch model=gpt-5-mini ts_response={}".format(datetime.now().isoformat(timespec="seconds")),
+                        "OUTPUT=<<<BEGIN_JSON",
+                        *json.dumps(result, ensure_ascii=False, indent=2).splitlines(),
+                        "<<<END_JSON",
+                    ])
+                except Exception:
+                    pass
                 return result
             # Retry if missing required keys - mutate user prompt text to add strict appendix (no system msg)
             strict_appendix = "\n\nSTRICT: Ensure keys Name, Age, Height, Location exist exactly as spelled (Title-Case). Do not include lowercase variants or code fences. Return only a JSON object."
@@ -1589,6 +1625,17 @@ class LangGraphHingeAgent:
                         retry_result["Location"] = retry_result.pop("location")
                     else:
                         retry_result.pop("location", None)
+            # LLM: Profile Scrape (parser batch) — normalize output
+            retry_result = normalize_dashes(retry_result)
+            try:
+                self._ai_trace_log([
+                    "AI_RESP call_id=submit_batch model=gpt-5-mini ts_response={}".format(datetime.now().isoformat(timespec="seconds")),
+                    "OUTPUT=<<<BEGIN_JSON",
+                    *json.dumps(retry_result, ensure_ascii=False, indent=2).splitlines(),
+                    "<<<END_JSON",
+                ])
+            except Exception:
+                pass
             return retry_result
         except Exception as e1:
             try:
@@ -1627,6 +1674,17 @@ class LangGraphHingeAgent:
                             retry_result["Location"] = retry_result.pop("location")
                         else:
                             retry_result.pop("location", None)
+                # LLM: Profile Scrape (parser batch) — normalize output
+                retry_result = normalize_dashes(retry_result)
+                try:
+                    self._ai_trace_log([
+                        "AI_RESP call_id=submit_batch model=gpt-5-mini ts_response={}".format(datetime.now().isoformat(timespec="seconds")),
+                        "OUTPUT=<<<BEGIN_JSON",
+                        *json.dumps(retry_result, ensure_ascii=False, indent=2).splitlines(),
+                        "<<<END_JSON",
+                    ])
+                except Exception:
+                    pass
                 return retry_result
             except Exception as e2:
                 print(f"❌ Extraction failed after retry: {e2}")
@@ -1838,6 +1896,23 @@ class LangGraphHingeAgent:
         print(f"   🎯 CV Confidence: {confidence:.3f}")
         print(f"   📐 Template size: {cv_result['width']}x{cv_result['height']}")
         
+        # Manual confirm just before irreversible tap (LIKE)
+        if getattr(self.config, "manual_confirm", False):
+            try:
+                print("🛑 Confirm before like enabled.")
+                answer = input("Proceed to like now? [y/N]: ").strip().lower()
+            except EOFError:
+                answer = ""
+            if answer not in ("y", "yes"):
+                print("❎ Like cancelled by user; not tapping like.")
+                return {
+                    **updated_state,
+                    "last_action": "execute_like",
+                    "action_successful": False,
+                    "should_continue": False,
+                    "completion_reason": "User cancelled like"
+                }
+
         # Execute the like tap
         if getattr(self.config, "dry_run", False):
             print(f"🧪 DRY RUN: would tap LIKE at ({like_x}, {like_y}) - confidence: {confidence:.3f}")
@@ -1868,10 +1943,14 @@ class LangGraphHingeAgent:
         verification_screenshot = capture_screenshot(state["device"], "like_verification")
         
         # Use profile change verification
-        profile_verification = self._verify_profile_change_internal({
-            **updated_state,
-            "current_screenshot": verification_screenshot
-        })
+        # aHash-based verification (no LLM)
+        vt = state.get("top_of_profile_path") or state.get("current_screenshot")
+        vb = state.get("bottom_of_profile_path") or state.get("current_screenshot")
+        ah = verify_profile_change_ahash(vt, vb, verification_screenshot)
+        profile_verification = {
+            "profile_changed": ah.get("profile_changed", False),
+            "confidence": ah.get("confidence", 0.0)
+        }
         
         if profile_verification.get('profile_changed', False):
             print(f"✅ Navigation occurred after like tap (confidence: {profile_verification.get('confidence', 0):.2f})")
@@ -2440,7 +2519,7 @@ class LangGraphHingeAgent:
     
     @gated_step
     def execute_dislike_node(self, state: HingeAgentState) -> HingeAgentState:
-        """Execute dislike action with profile change verification"""
+        """Execute dislike action with CV detection, caching, and verification"""
         print(f"👎 Executing dislike: {state.get('decision_reason', 'criteria not met')}")
         
         # Store previous profile data for verification
@@ -2456,21 +2535,88 @@ class LangGraphHingeAgent:
             'location': current_analysis.get('location', ''),
             'interests': current_analysis.get('interests', [])
         }
-        
-        # Execute dislike tap
-        x_dislike = int(state["width"] * self.config.dislike_button_coords[0])
-        y_dislike = int(state["height"] * self.config.dislike_button_coords[1])
-        
-        tap(state["device"], x_dislike, y_dislike)
+
+        # Take a fresh screenshot to detect dislike button
+        fresh_screenshot = capture_screenshot(state["device"], "fresh_dislike_detection")
+        updated_state["current_screenshot"] = fresh_screenshot
+
+        # Try CV-based detection first
+        x_dislike: Optional[int] = None
+        y_dislike: Optional[int] = None
+        conf_dislike: float = 0.0
+
+        try:
+            cv_res = detect_dislike_button_cv(fresh_screenshot)
+        except Exception as _e:
+            print(f"⚠️ Dislike CV detection errored: {_e}")
+            cv_res = {'found': False, 'confidence': 0.0}
+
+        if cv_res.get('found'):
+            x_dislike = int(cv_res.get('x', 0))
+            y_dislike = int(cv_res.get('y', 0))
+            conf_dislike = float(cv_res.get('confidence', 0.0))
+            # Cache for future frames in this run
+            try:
+                self._dislike_coords = (x_dislike, y_dislike, conf_dislike)
+                self._debug(f"🗃️ Cached dislike coords for this session: {self._dislike_coords}")
+            except Exception:
+                pass
+        elif getattr(self, "_dislike_coords", None):
+            # Use cached dislike coords as fallback if CV fails
+            x_dislike, y_dislike, conf_dislike = self._dislike_coords
+            print(f"♻️ Using cached dislike coords: ({x_dislike}, {y_dislike}) conf={conf_dislike:.2f}")
+        else:
+            # Last-resort fallback: use config percentages
+            x_dislike = int(state["width"] * self.config.dislike_button_coords[0])
+            y_dislike = int(state["height"] * self.config.dislike_button_coords[1])
+            conf_dislike = 0.5
+            print(f"⚠️ CV and cache unavailable; using config dislike coords: ({x_dislike}, {y_dislike})")
+
+        # Manual confirm just before irreversible tap (DISLIKE)
+        if getattr(self.config, "manual_confirm", False):
+            try:
+                print("🛑 Confirm before dislike enabled.")
+                answer = input("Proceed to dislike now? [y/N]: ").strip().lower()
+            except EOFError:
+                answer = ""
+            if answer not in ("y", "yes"):
+                print("❎ Dislike cancelled by user; not tapping dislike.")
+                return {
+                    **updated_state,
+                    "last_action": "execute_dislike",
+                    "action_successful": False,
+                    "should_continue": False,
+                    "completion_reason": "User cancelled dislike"
+                }
+
+        # Dry-run safety: don't tap in dry-run
+        if getattr(self.config, "dry_run", False):
+            print(f"🧪 DRY RUN: would tap DISLIKE at ({x_dislike}, {y_dislike}) - confidence: {conf_dislike:.3f}")
+            return {
+                **updated_state,
+                "last_action": "execute_dislike",
+                "action_successful": True
+            }
+
+        # Execute dislike tap (use confidence-aware tap when possible)
+        tap_with_confidence(state["device"], x_dislike, y_dislike, conf_dislike if conf_dislike > 0 else 0.7)
         time.sleep(3)
         
         # Verify dislike using profile change detection
         verification_screenshot = capture_screenshot(state["device"], "dislike_verification")
         
-        profile_verification = self._verify_profile_change_internal({
-            **updated_state,
-            "current_screenshot": verification_screenshot
-        })
+        # aHash-based verification (no LLM)
+        vt = state.get("top_of_profile_path") or state.get("current_screenshot")
+        vb = state.get("bottom_of_profile_path") or state.get("current_screenshot")
+        ah = verify_profile_change_ahash(vt, vb, verification_screenshot)
+        try:
+            print(f"[VERIFY aHash DISLIKE] top={ah.get('distances',{}).get('top')} bottom={ah.get('distances',{}).get('bottom')} thr={ah.get('threshold')}")
+        except Exception:
+            pass
+        profile_verification = {
+            "profile_changed": ah.get("profile_changed", False),
+            "confidence": ah.get("confidence", 0.0)
+        }
         
         if profile_verification.get('profile_changed', False):
             print("✅ Dislike successful - moved to new profile")
@@ -2555,9 +2701,12 @@ class LangGraphHingeAgent:
         """Verify if we've moved to a new profile"""
         print("🔍 Verifying profile change...")
         
-        verification_result = self._verify_profile_change_internal(state)
-        profile_changed = verification_result.get('profile_changed', False)
-        confidence = verification_result.get('confidence', 0)
+        # aHash verification using stored top/bottom vs current
+        vt = state.get("top_of_profile_path") or state.get("current_screenshot")
+        vb = state.get("bottom_of_profile_path") or state.get("current_screenshot")
+        ah = verify_profile_change_ahash(vt, vb, state.get("current_screenshot"))
+        profile_changed = ah.get('profile_changed', False)
+        confidence = ah.get('confidence', 0.0)
         
         print(f"📊 Profile change verification: {profile_changed} (confidence: {confidence:.2f})")
         
@@ -2707,6 +2856,13 @@ class LangGraphHingeAgent:
                     _upd_verdict(pid, verdict, decision_reason)
                 except Exception as _e:
                     print(f"[verdict] update failed: {_e}")
+                # Persist accumulated LLM metrics for Profile Scrape/Eval
+                try:
+                    llm_m = state.get("llm_metrics", {})
+                    if isinstance(llm_m, dict) and llm_m:
+                        update_profile_llm_metrics(pid, llm_m)
+                except Exception as _e:
+                    print(f"[llm_metrics] update failed: {_e}")
 
                 opener_ms = 0
                 messages_ms = 0
@@ -2753,13 +2909,14 @@ class LangGraphHingeAgent:
                         ("messages_ms", "messages"),
                         ("pick_ms", "pick"),
                     ]
-                    print("TIMINGS (ms)")
-                    for k, label in order:
-                        if k in tdict:
-                            try:
-                                print(f"- {label}: {int(tdict[k])}")
-                            except Exception:
-                                print(f"- {label}: {tdict[k]}")
+                    if getattr(self.config, "verbose_logging", False):
+                        print("TIMINGS (ms)")
+                        for k, label in order:
+                            if k in tdict:
+                                try:
+                                    print(f"- {label}: {int(tdict[k])}")
+                                except Exception:
+                                    print(f"- {label}: {tdict[k]}")
                 except Exception:
                     pass
                 return
@@ -2926,13 +3083,14 @@ class LangGraphHingeAgent:
                     ("messages_ms", "messages"),
                     ("pick_ms", "pick"),
                 ]
-                print("TIMINGS (ms)")
-                for k, label in order:
-                    if k in tdict:
-                        try:
-                            print(f"- {label}: {int(tdict[k])}")
-                        except Exception:
-                            print(f"- {label}: {tdict[k]}")
+                if getattr(self.config, "verbose_logging", False):
+                    print("TIMINGS (ms)")
+                    for k, label in order:
+                        if k in tdict:
+                            try:
+                                print(f"- {label}: {int(tdict[k])}")
+                            except Exception:
+                                print(f"- {label}: {tdict[k]}")
             except Exception:
                 pass
         except Exception as e:
@@ -2989,36 +3147,13 @@ class LangGraphHingeAgent:
             return s
 
         if should_like:
-            # 4) Find like button (CV)
-            s = self.detect_like_button_node(s)
-            if not s.get("action_successful"):
-                return self._fail(s, "Like button not found", "detect_like_button")
-
-            # 5) Execute like
-            s = self.execute_like_node(s)
-            if not s.get("action_successful"):
-                return self._fail(s, "Failed to execute like", "execute_like")
-
-            # 6) Prefer sending with comment when comment interface path works
-            # Generate comment
-            s_gen = self.generate_comment_node(s)
-            if s_gen.get("action_successful"):
-                # Try to send the comment
-                s_send = self.send_comment_with_typing_node(s_gen)
-                if s_send.get("action_successful"):
-                    s = s_send
-                else:
-                    # Fallback: like without comment
-                    s_fb = self.send_like_without_comment_node(s)
-                    if not s_fb.get("action_successful"):
-                        return self._fail(s_fb, "Failed to send like (fallback) after comment send failed", "send_like_without_comment")
-                    s = s_fb
-            else:
-                # If comment generation failed, attempt like without comment once
-                s_fb = self.send_like_without_comment_node(s)
-                if not s_fb.get("action_successful"):
-                    return self._fail(s_fb, "Failed to send like (no comment path)", "send_like_without_comment")
-                s = s_fb
+            try:
+                self._export_profile_row(s, False, s.get("current_screenshot"))
+            except Exception as _e:
+                print(f"⚠️  Export failed (like placeholder): {_e}")
+            s["should_continue"] = False
+            s["completion_reason"] = "LIKE placeholder"
+            return s
 
         else:
             # Dislike path
@@ -3160,93 +3295,19 @@ class LangGraphHingeAgent:
         }
     
     def _verify_profile_change_internal(self, state: HingeAgentState) -> Dict[str, Any]:
-        """Internal helper for profile change verification"""
-        if not state['current_screenshot']:
-            return {
-                "profile_changed": False,
-                "confidence": 0.0,
-                "message": "No screenshot available"
-            }
-        
-        # Extract current profile info
-        current_text = extract_text_from_image(
-            state['current_screenshot']
-        )
-        
-        current_analysis = analyze_dating_ui(
-            state['current_screenshot']
-        )
-        
-        # Get previous profile info
-        previous_text = state.get('previous_profile_text', '')
-        previous_features = state.get('previous_profile_features', {})
-        
-        # If first profile, consider it new
-        if not previous_text and not previous_features:
-            return {
-                "profile_changed": True,
-                "confidence": 1.0,
-                "message": "First profile"
-            }
-        
-        # Compare profiles to detect change
-        profile_changed = False
-        reasons = []
-        
-        # Text comparison
-        if current_text and previous_text:
-            current_words = set(current_text.lower().split())
-            previous_words = set(previous_text.lower().split())
-            
-            if len(current_words) > 0 and len(previous_words) > 0:
-                overlap = len(current_words.intersection(previous_words))
-                similarity = overlap / max(len(current_words), len(previous_words))
-                
-                if similarity < 0.3:  # Less than 30% overlap = different profile
-                    profile_changed = True
-                    reasons.append(f"Text similarity low: {similarity:.2f}")
-        
-        # Feature comparison
-        current_features = {
-            'age': current_analysis.get('estimated_age', 0),
-            'name': current_analysis.get('name', ''),
-            'location': current_analysis.get('location', ''),
-            'interests': current_analysis.get('interests', [])
-        }
-        
-        if previous_features:
-            # Compare key features
-            if (current_features['name'] != previous_features.get('name', '') and 
-                current_features['name'] and previous_features.get('name')):
-                profile_changed = True
-                reasons.append("Different name")
-            
-            if (abs(current_features['age'] - previous_features.get('age', 0)) > 5 and 
-                current_features['age'] > 0 and previous_features.get('age', 0) > 0):
-                profile_changed = True
-                reasons.append("Age difference")
-            
-            # Interest overlap
-            current_interests = set(current_features.get('interests', []))
-            previous_interests = set(previous_features.get('interests', []))
-            if current_interests and previous_interests:
-                interest_overlap = len(current_interests.intersection(previous_interests))
-                interest_similarity = interest_overlap / max(len(current_interests), len(previous_interests))
-                if interest_similarity < 0.2:
-                    profile_changed = True
-                    reasons.append(f"Interest overlap low: {interest_similarity:.2f}")
-        
-        # Calculate confidence
-        confidence = 0.8 if profile_changed else 0.3
-        if len(reasons) > 1:
-            confidence = min(0.95, confidence + 0.1 * (len(reasons) - 1))
-        
+        """Internal helper rewritten to use aHash-only verification (no LLM)."""
+        new_top = state.get('current_screenshot')
+        if not new_top:
+            return {"profile_changed": False, "confidence": 0.0, "message": "No screenshot available"}
+        prev_top = state.get('top_of_profile_path') or new_top
+        prev_bottom = state.get('bottom_of_profile_path') or new_top
+        ah = verify_profile_change_ahash(prev_top, prev_bottom, new_top)
         return {
-            "profile_changed": profile_changed,
-            "confidence": confidence,
-            "reasons": reasons,
-            "current_features": current_features,
-            "message": f"Profile {'changed' if profile_changed else 'unchanged'}: {', '.join(reasons) if reasons else 'similar content'}"
+            "profile_changed": bool(ah.get("profile_changed", False)),
+            "confidence": float(ah.get("confidence", 0.0)),
+            "reasons": [],
+            "current_features": {},
+            "message": "aHash verification"
         }
     
     def run_automation(self) -> Dict[str, Any]:

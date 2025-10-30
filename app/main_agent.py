@@ -53,7 +53,7 @@ def parse_arguments():
         "--manual-confirm", "--confirm-steps",
         dest="manual_confirm",
         action="store_true",
-        help="Require manual confirmation before each step and log all actions"
+        help="Require confirmation for irreversible actions (LIKE/DISLIKE); log actions to logs/"
     )
     parser.add_argument(
         "--trace-ai",
@@ -166,7 +166,7 @@ async def main():
         print(f"🔊 Verbose Logging: {config.verbose_logging}")
         print(f" Manual Confirm Mode: {config.manual_confirm}")
         if config.manual_confirm:
-            print("Manual confirmation mode ENABLED: each step requires 'y' to proceed and all actions are logged.")
+            print("Manual confirmation mode ENABLED: irreversible taps (LIKE/DISLIKE) require 'y' to proceed; actions are logged.")
         print(f"📝 AI Trace: {config.ai_trace}")
         print(f"🏷️ Like Mode: {config.like_mode}")
         print(f"🧭 Deterministic Mode: {config.deterministic_mode}")

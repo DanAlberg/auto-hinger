@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict, List, Tuple
 from openai import OpenAI
 import config  # ensure .env is loaded at import time
+from text_utils import normalize_dashes
 
 from prompt_engine import build_profile_eval_prompt
 
@@ -332,6 +333,8 @@ def evaluate_profile_fields(extracted: Dict[str, Any], model: str | None = None)
         parsed = json.loads(raw)
         if not isinstance(parsed, dict):
             parsed = _default_profile_eval()
+        # LLM: Eval — normalize output
+        parsed = normalize_dashes(parsed)
         # Print preview to console (truncated)
         try:
             print("[AI JSON profile_eval]")

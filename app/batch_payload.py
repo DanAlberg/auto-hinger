@@ -4,7 +4,7 @@ import sqlite3
 import json
 from typing import List, Dict, Optional, Any
 
-from sqlite_store import get_db_path, update_profile_opener_fields
+from sqlite_store import get_db_path, update_profile_opener_fields, update_profile_llm_metrics
 import prompt_engine
 import analyzer_openai
 
@@ -293,7 +293,29 @@ def run_opening_style(profile_id: Optional[int] = None, db_path: Optional[str] =
     system_prompt, user_prompt = prompt_engine.build_opening_style_prompts(profile_payload)
 
     # Call LLM (JSON-only)
+    # LLM: LLM1 (Opening Style)
+    from time import perf_counter as _pf
+    t0 = _pf()
+    try:
+        from datetime import datetime as _dt
+        analyzer_openai._ai_trace_log([
+            f"PROMPT_REF call_id=llm1 ts={_dt.now().isoformat(timespec='seconds')}",
+            "PROMPT_REF=prompt_engine.build_opening_style_prompts (batch_payload.run_opening_style)",
+            f"PROMPT_META=profile_id={pid}"
+        ])
+    except Exception:
+        pass
     result = analyzer_openai.chat_json_system_user(system_prompt, user_prompt, model=model)
+    dt_ms = int((_pf() - t0) * 1000)
+    try:
+        from datetime import datetime as _dt
+        update_profile_llm_metrics(
+            pid,
+            {"llm1": {"model": model, "duration_ms": dt_ms, "ts": _dt.now().isoformat(timespec="seconds")}},
+            db_path=db_path
+        )
+    except Exception:
+        pass
 
     # Persist flattened weights and other fields to DB
     update_profile_opener_fields(pid, result, db_path=db_path)
@@ -395,7 +417,7 @@ def _build_opening_style_json_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return style
 
 
-def run_opening_messages(profile_id: Optional[int] = None, db_path: Optional[str] = None, model: str = "gpt-4o") -> Dict[str, Any]:
+def run_opening_messages(profile_id: Optional[int] = None, db_path: Optional[str] = None, model: str = "gpt-5-mini") -> Dict[str, Any]:
     """
     Execute the opening-messages LLM request for a given profile id (or latest if None).
     Uses scraped profile JSON + opening-style JSON; persists full JSON to opening_messages_json.
@@ -420,7 +442,29 @@ def run_opening_messages(profile_id: Optional[int] = None, db_path: Optional[str
     system_prompt, user_prompt = prompt_engine.build_opening_messages_prompts(profile_json, opening_style_json)
 
     # Call LLM (JSON-only) with gpt-5 as requested
+    # LLM: LLM2 (Opening Messages)
+    from time import perf_counter as _pf
+    t0 = _pf()
+    try:
+        from datetime import datetime as _dt
+        analyzer_openai._ai_trace_log([
+            f"PROMPT_REF call_id=llm2 ts={_dt.now().isoformat(timespec='seconds')}",
+            "PROMPT_REF=prompt_engine.build_opening_messages_prompts (batch_payload.run_opening_messages)",
+            f"PROMPT_META=profile_id={pid}"
+        ])
+    except Exception:
+        pass
     result = analyzer_openai.chat_json_system_user(system_prompt, user_prompt, model=model)
+    dt_ms = int((_pf() - t0) * 1000)
+    try:
+        from datetime import datetime as _dt
+        update_profile_llm_metrics(
+            pid,
+            {"llm2": {"model": model, "duration_ms": dt_ms, "ts": _dt.now().isoformat(timespec="seconds")}},
+            db_path=db_path
+        )
+    except Exception:
+        pass
 
     # Persist JSON blob
     from sqlite_store import update_profile_opening_messages_json
@@ -471,7 +515,29 @@ def run_opening_pick(profile_id: Optional[int] = None, db_path: Optional[str] = 
     system_prompt, user_prompt = prompt_engine.build_opening_pick_prompts(profile_json, opening_style_json, generated_openers_json)
 
     # Call LLM (JSON-only) with gpt-5
+    # LLM: LLM3 (Opening Pick)
+    from time import perf_counter as _pf
+    t0 = _pf()
+    try:
+        from datetime import datetime as _dt
+        analyzer_openai._ai_trace_log([
+            f"PROMPT_REF call_id=llm3 ts={_dt.now().isoformat(timespec='seconds')}",
+            "PROMPT_REF=prompt_engine.build_opening_pick_prompts (batch_payload.run_opening_pick)",
+            f"PROMPT_META=profile_id={pid}"
+        ])
+    except Exception:
+        pass
     result = analyzer_openai.chat_json_system_user(system_prompt, user_prompt, model=model)
+    dt_ms = int((_pf() - t0) * 1000)
+    try:
+        from datetime import datetime as _dt
+        update_profile_llm_metrics(
+            pid,
+            {"llm3": {"model": model, "duration_ms": dt_ms, "ts": _dt.now().isoformat(timespec="seconds")}},
+            db_path=db_path
+        )
+    except Exception:
+        pass
 
     # Persist selection (full JSON + chosen_text)
     from sqlite_store import update_profile_opening_pick

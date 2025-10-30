@@ -10,6 +10,8 @@ from openai import OpenAI
 import config  # ensure .env is loaded at import time
 import time
 
+from text_utils import normalize_dashes
+
 
 # Initialize OpenAI client (reads OPENAI_API_KEY from environment)
 _client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -50,24 +52,29 @@ def _b64_image(image_path: str) -> str:
 def _chat_text(prompt: str, temperature: float = 0.2, model: str = "gpt-5-mini") -> str:
     # AI trace: log the prompt exactly as sent (no images here)
     _ai_trace_log([
-        f"AI_CALL call_id=chat_text model={model} temperature={temperature}",
-        "PROMPT=<<<BEGIN",
-        *prompt.splitlines(),
-        "<<<END",
+        f"AI_REQ call_id=chat_text model={model} ts_request={datetime.now().isoformat(timespec='seconds')}",
+        "PROMPT_REF=analyzer_openai._chat_text"
     ])
     t0 = time.perf_counter()
     resp = _client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
-        temperature=temperature,
     )
     dt_ms = int((time.perf_counter() - t0) * 1000)
-    _ai_trace_log([f"AI_TIME call_id=chat_text model={model} duration_ms={dt_ms}"])
     try:
         print(f"[AI] chat_text model={model} duration={dt_ms}ms")
     except Exception:
         pass
     content = resp.choices[0].message.content or ""
+    try:
+        _ai_trace_log([
+            f"AI_RESP call_id=chat_text model={model} ts_response={datetime.now().isoformat(timespec='seconds')} duration_ms={dt_ms}",
+            "OUTPUT=<<<BEGIN_TEXT",
+            *(content.strip()).splitlines(),
+            "<<<END_TEXT",
+        ])
+    except Exception:
+        pass
     return content.strip()
 
 
@@ -80,10 +87,8 @@ def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float
         except Exception:
             _sz = "?"
         _ai_trace_log([
-            f"AI_CALL call_id=chat_json model={model} response_format=json_object",
-            "PROMPT=<<<BEGIN",
-            *prompt.splitlines(),
-            "<<<END",
+            f"AI_REQ call_id=chat_json model={model} ts_request={datetime.now().isoformat(timespec='seconds')} response_format=json_object",
+            "PROMPT_REF=analyzer_openai._chat_json",
             f"IMAGE image_path={image_path} image_size={_sz} bytes"
         ])
         b64 = _b64_image(image_path)
@@ -96,10 +101,8 @@ def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float
         })
     else:
         _ai_trace_log([
-            f"AI_CALL call_id=chat_json model={model} response_format=json_object",
-            "PROMPT=<<<BEGIN",
-            *prompt.splitlines(),
-            "<<<END",
+            f"AI_REQ call_id=chat_json model={model} ts_request={datetime.now().isoformat(timespec='seconds')} response_format=json_object",
+            "PROMPT_REF=analyzer_openai._chat_json"
         ])
         messages.append({"role": "user", "content": prompt})
 
@@ -110,7 +113,6 @@ def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float
         messages=messages,
     )
     dt_ms = int((time.perf_counter() - t0) * 1000)
-    _ai_trace_log([f"AI_TIME call_id=chat_json model={model} duration_ms={dt_ms}"])
     try:
         print(f"[AI] chat_json model={model} duration={dt_ms}ms")
     except Exception:
@@ -130,6 +132,16 @@ def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float
                 parsed = {}
         except Exception:
             parsed = {}
+    # Log normalized/parsed output to ai_trace (raw; no hyphen normalization here)
+    try:
+        _ai_trace_log([
+            f"AI_RESP call_id=chat_json model={model} ts_response={datetime.now().isoformat(timespec='seconds')} duration_ms={dt_ms}",
+            "OUTPUT=<<<BEGIN_JSON",
+            *json.dumps(parsed, ensure_ascii=False, indent=2).splitlines(),
+            "<<<END_JSON",
+        ])
+    except Exception:
+        pass
     # Pretty-print the JSON to console for quick review (truncated)
     try:
         print("[AI JSON chat_json]")
@@ -145,13 +157,8 @@ def chat_json_system_user(system_prompt: str, user_prompt: str, model: str = "gp
     """
     from time import perf_counter
     _ai_trace_log([
-        f"AI_CALL call_id=chat_json_system_user model={model} response_format=json_object",
-        "SYSTEM=<<<BEGIN",
-        * (system_prompt or "").splitlines(),
-        "<<<END",
-        "USER=<<<BEGIN",
-        * (user_prompt or "").splitlines(),
-        "<<<END",
+        f"AI_REQ call_id=chat_json_system_user model={model} ts_request={datetime.now().isoformat(timespec='seconds')} response_format=json_object",
+        "PROMPT_REF=see caller (batch_payload.run_opening_* or profile_eval.evaluate_profile_fields)"
     ])
     messages = [
         {"role": "system", "content": system_prompt or ""},
@@ -180,6 +187,18 @@ def chat_json_system_user(system_prompt: str, user_prompt: str, model: str = "gp
         except Exception:
             parsed = {}
 
+    # LLM: LLM1 (Opening Style) / LLM2 (Opening Messages) / LLM3 (Opening Pick) — normalize output
+    parsed = normalize_dashes(parsed)
+    # Log normalized output to ai_trace
+    try:
+        _ai_trace_log([
+            f"AI_RESP call_id=chat_json_system_user model={model} ts_response={datetime.now().isoformat(timespec='seconds')} duration_ms={dt_ms}",
+            "OUTPUT=<<<BEGIN_JSON",
+            *json.dumps(parsed, ensure_ascii=False, indent=2).splitlines(),
+            "<<<END_JSON",
+        ])
+    except Exception:
+        pass
     # Pretty-print the JSON to console for quick review (truncated)
     try:
         print("[AI JSON chat_json_system_user]")
@@ -211,10 +230,8 @@ def extract_text_from_image(image_path: str) -> str:
     except Exception:
         _sz = "?"
     _ai_trace_log([
-        "AI_CALL call_id=extract_text_from_image model=gpt-5-mini temperature=0.2",
-        "PROMPT=<<<BEGIN",
-        *prompt.splitlines(),
-        "<<<END",
+        "AI_REQ call_id=extract_text_from_image model=gpt-5-mini ts_request={}".format(datetime.now().isoformat(timespec="seconds")),
+        "PROMPT_REF=analyzer_openai.extract_text_from_image",
         f"IMAGE image_path={image_path} image_size={_sz} bytes"
     ])
 
@@ -229,15 +246,23 @@ def extract_text_from_image(image_path: str) -> str:
     resp = _client.chat.completions.create(
         model="gpt-5-mini",
         messages=messages,
-        temperature=0.2
     )
     dt_ms = int((time.perf_counter() - t0) * 1000)
-    _ai_trace_log([f"AI_TIME call_id=extract_text_from_image model=gpt-5-mini duration_ms={dt_ms}"])
     try:
         print(f"[AI] extract_text_from_image model=gpt-5-mini duration={dt_ms}ms")
     except Exception:
         pass
-    return (resp.choices[0].message.content or "").strip()
+    text_out = (resp.choices[0].message.content or "").strip()
+    try:
+        _ai_trace_log([
+            "AI_RESP call_id=extract_text_from_image model=gpt-5-mini ts_response={} duration_ms={}".format(datetime.now().isoformat(timespec="seconds"), dt_ms),
+            "OUTPUT=<<<BEGIN_TEXT",
+            *text_out.splitlines(),
+            "<<<END_TEXT",
+        ])
+    except Exception:
+        pass
+    return text_out
 
 
 def _generate_fallback_flirty_comment(profile_text: str) -> str:
