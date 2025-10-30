@@ -36,6 +36,13 @@ def _should_emit_cv_debug() -> bool:
     except Exception:
         return False
 
+def _is_verbose_console() -> bool:
+    """General console verbosity gate controlled by HINGE_VERBOSE_LOGGING env var."""
+    try:
+        return os.environ.get("HINGE_VERBOSE_LOGGING", "0") == "1"
+    except Exception:
+        return False
+
 
 
 def clear_screenshots_directory():
@@ -49,14 +56,18 @@ def clear_screenshots_directory():
             count = len(old_screenshots)
             
             if count > 0:
-                print(f"🗑️  Clearing {count} old screenshots from images directory...")
+                if _is_verbose_console():
+                    print(f"🗑️  Clearing {count} old screenshots from images directory...")
                 for screenshot in old_screenshots:
                     os.remove(screenshot)
-                print("✅ Screenshots directory cleared")
+                if _is_verbose_console():
+                    print("✅ Screenshots directory cleared")
             else:
-                print("📁 Images directory already clean")
+                if _is_verbose_console():
+                    print("📁 Images directory already clean")
         else:
-            print("📁 Images directory doesn't exist - will be created when needed")
+            if _is_verbose_console():
+                print("📁 Images directory doesn't exist - will be created when needed")
             
     except Exception as e:
         print(f"⚠️  Warning: Could not clear screenshots directory: {e}")
@@ -73,17 +84,21 @@ def clear_submitted_directory():
             old = glob.glob(os.path.join(submitted_dir, "*.png"))
             count = len(old)
             if count > 0:
-                print(f"🗑️  Clearing {count} mirrored images from images/submitted...")
+                if _is_verbose_console():
+                    print(f"🗑️  Clearing {count} mirrored images from images/submitted...")
                 for p in old:
                     try:
                         os.remove(p)
                     except Exception:
                         pass
-                print("✅ Submitted images directory cleared")
+                if _is_verbose_console():
+                    print("✅ Submitted images directory cleared")
             else:
-                print("📁 Submitted directory already clean")
+                if _is_verbose_console():
+                    print("📁 Submitted directory already clean")
         else:
-            print("📁 images/submitted doesn't exist - will be created when needed")
+            if _is_verbose_console():
+                print("📁 images/submitted doesn't exist - will be created when needed")
     except Exception as e:
         print(f"⚠️  Warning: Could not clear submitted directory: {e}")
 
@@ -93,13 +108,15 @@ def connect_device(user_ip_address="127.0.0.1"):
     adb = AdbClient(host=user_ip_address, port=5037)
     devices = adb.devices()
 
-    print("Devices connected: ", devices)
+    if _is_verbose_console():
+        print("Devices connected: ", devices)
 
     if len(devices) == 0:
         print("No devices connected")
         return None
     device = devices[0]
-    print(f"Connected to {device.serial}")
+    if _is_verbose_console():
+        print(f"Connected to {device.serial}")
     return device
 
 
@@ -120,7 +137,8 @@ def capture_screenshot(device, filename):
     with open(filepath, "wb") as fp:
         fp.write(result)
     
-    print(f"📸 Screenshot saved: {filepath}")
+    if _is_verbose_console():
+        print(f"📸 Screenshot saved: {filepath}")
     return filepath
 
 
@@ -147,7 +165,8 @@ def tap_with_confidence(device, x, y, confidence=1.0, tap_area_size="medium"):
         # Standard tap
         device.shell(f"input tap {x} {y}")
     
-    print(f"Tapped at ({x}, {y}) with confidence {confidence:.2f}")
+    if _is_verbose_console():
+        print(f"Tapped at ({x}, {y}) with confidence {confidence:.2f}")
 
 
 def dismiss_keyboard(device, width=None, height=None):
@@ -210,7 +229,8 @@ def dismiss_keyboard(device, width=None, height=None):
 def input_text(device, text):
     # Escape spaces in the text
     text = text.replace(" ", "%s")
-    print("text to be written: ", text)
+    if _is_verbose_console():
+        print("text to be written: ", text)
     device.shell(f'input text "{text}"')
 
 
@@ -338,7 +358,8 @@ def generate_comment(profile_text):
 
 def get_screen_resolution(device):
     output = device.shell("wm size")
-    print("screen size: ", output)
+    if _is_verbose_console():
+        print("screen size: ", output)
     resolution = output.strip().split(":")[1].strip()
     width, height = map(int, resolution.split("x"))
     return width, height
@@ -402,11 +423,12 @@ def detect_like_button_cv(screenshot_path):
         confidence_threshold = 0.7
         found = confidence >= confidence_threshold
         
-        print(f"🎯 CV Like Button Detection:")
-        print(f"   📍 Center: ({center_x}, {center_y})")
-        print(f"   📐 Template size: {template_width}x{template_height}")
-        print(f"   🎯 Confidence: {confidence:.3f}")
-        print(f"   ✅ Found: {found} (threshold: {confidence_threshold})")
+        if _should_emit_cv_debug():
+            print(f"🎯 CV Like Button Detection:")
+            print(f"   📍 Center: ({center_x}, {center_y})")
+            print(f"   📐 Template size: {template_width}x{template_height}")
+            print(f"   🎯 Confidence: {confidence:.3f}")
+            print(f"   ✅ Found: {found} (threshold: {confidence_threshold})")
         
         return {
             'found': found,
@@ -421,6 +443,77 @@ def detect_like_button_cv(screenshot_path):
         
     except Exception as e:
         print(f"❌ CV like button detection failed: {e}")
+        return {'found': False, 'confidence': 0.0}
+
+
+def detect_dislike_button_cv(screenshot_path):
+    """
+    Detect dislike button using OpenCV template matching
+
+    Returns:
+        dict: {
+            'found': bool,
+            'x': int, 
+            'y': int,
+            'confidence': float,
+            'width': int,
+            'height': int,
+            'top_left_x': int,
+            'top_left_y': int
+        }
+    """
+    try:
+        template_path = "assets/dislike_button.png"
+        if not os.path.exists(template_path):
+            print(f"❌ Dislike button template not found: {template_path}")
+            return {'found': False, 'confidence': 0.0}
+
+        screenshot = cv2.imread(screenshot_path)
+        template = cv2.imread(template_path)
+
+        if screenshot is None:
+            print(f"❌ Could not load screenshot: {screenshot_path}")
+            return {'found': False, 'confidence': 0.0}
+
+        if template is None:
+            print(f"❌ Could not load template: {template_path}")
+            return {'found': False, 'confidence': 0.0}
+
+        th, tw = template.shape[:2]
+        screenshot_gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
+        template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+
+        # Perform template matching
+        result = cv2.matchTemplate(screenshot_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+        confidence = float(max_val)
+        top_left = max_loc
+        center_x = top_left[0] + tw // 2
+        center_y = top_left[1] + th // 2
+
+        confidence_threshold = 0.70  # per request
+        found = confidence >= confidence_threshold
+
+        if _should_emit_cv_debug():
+            print("🎯 CV Dislike Button Detection:")
+            print(f"   📍 Center: ({center_x}, {center_y})")
+            print(f"   📐 Template size: {tw}x{th}")
+            print(f"   🎯 Confidence: {confidence:.3f}")
+            print(f"   ✅ Found: {found} (threshold: {confidence_threshold})")
+
+        return {
+            'found': found,
+            'x': int(center_x),
+            'y': int(center_y),
+            'confidence': confidence,
+            'width': int(tw),
+            'height': int(th),
+            'top_left_x': int(top_left[0]),
+            'top_left_y': int(top_left[1]),
+        }
+    except Exception as e:
+        print(f"❌ CV dislike button detection failed: {e}")
         return {'found': False, 'confidence': 0.0}
 
 
@@ -494,11 +587,12 @@ def detect_send_button_cv(screenshot_path, preferred: str = None):
             center_y = top_left[1] + th // 2
             found = confidence >= confidence_threshold
 
-            print(f"🎯 CV Send Button Detection ({label}):")
-            print(f"   📍 Center: ({center_x}, {center_y})")
-            print(f"   📐 Template size: {tw}x{th}")
-            print(f"   🎯 Confidence: {confidence:.3f}")
-            print(f"   ✅ Found: {found} (threshold: {confidence_threshold})")
+            if _should_emit_cv_debug():
+                print(f"🎯 CV Send Button Detection ({label}):")
+                print(f"   📍 Center: ({center_x}, {center_y})")
+                print(f"   📐 Template size: {tw}x{th}")
+                print(f"   🎯 Confidence: {confidence:.3f}")
+                print(f"   ✅ Found: {found} (threshold: {confidence_threshold})")
 
             if confidence > best['confidence']:
                 best.update({
@@ -513,10 +607,11 @@ def detect_send_button_cv(screenshot_path, preferred: str = None):
                     'matched_template': label
                 })
 
-        if best['matched_template']:
-            print(f"✅ Best send match: {best['matched_template']} with confidence {best['confidence']:.3f} (found={best['found']})")
-        else:
-            print("❌ No send button templates matched.")
+        if _should_emit_cv_debug():
+            if best['matched_template']:
+                print(f"✅ Best send match: {best['matched_template']} with confidence {best['confidence']:.3f} (found={best['found']})")
+            else:
+                print("❌ No send button templates matched.")
 
         return best if best['matched_template'] else {'found': False, 'confidence': 0.0}
 
@@ -583,11 +678,12 @@ def detect_comment_field_cv(screenshot_path):
         confidence_threshold = 0.6  # Lower threshold for comment field as text may vary
         found = confidence >= confidence_threshold
         
-        print(f"🎯 CV Comment Field Detection:")
-        print(f"   📍 Center: ({center_x}, {center_y})")
-        print(f"   📐 Template size: {template_width}x{template_height}")
-        print(f"   🎯 Confidence: {confidence:.3f}")
-        print(f"   ✅ Found: {found} (threshold: {confidence_threshold})")
+        if _should_emit_cv_debug():
+            print(f"🎯 CV Comment Field Detection:")
+            print(f"   📍 Center: ({center_x}, {center_y})")
+            print(f"   📐 Template size: {template_width}x{template_height}")
+            print(f"   🎯 Confidence: {confidence:.3f}")
+            print(f"   ✅ Found: {found} (threshold: {confidence_threshold})")
         
         return {
             'found': found,
@@ -688,11 +784,12 @@ def detect_keyboard_tick_cv(screenshot_path, template_path="assets/tick.png"):
         threshold = 0.5  # slightly lower as tick is small; adjust if noisy
         found = confidence >= threshold
 
-        print(f"🎯 CV Tick Detection:")
-        print(f"   📍 Center: ({center_x}, {center_y})")
-        print(f"   📐 Template size: {tw}x{th}")
-        print(f"   🎯 Confidence: {confidence:.3f}")
-        print(f"   ✅ Found: {found} (threshold: {threshold})")
+        if _should_emit_cv_debug():
+            print(f"🎯 CV Tick Detection:")
+            print(f"   📍 Center: ({center_x}, {center_y})")
+            print(f"   📐 Template size: {tw}x{th}")
+            print(f"   🎯 Confidence: {confidence:.3f}")
+            print(f"   ✅ Found: {found} (threshold: {threshold})")
 
         return {
             'found': found,
@@ -759,11 +856,12 @@ def detect_age_icon_cv(screenshot_path, template_path="assets/icon_age.png"):
         threshold = 0.65
         found = confidence >= threshold
 
-        print("🎯 CV Age Icon Detection:")
-        print(f"   📍 Center: ({center_x}, {center_y})")
-        print(f"   📐 Template size: {tw}x{th}")
-        print(f"   🎯 Confidence: {confidence:.3f}")
-        print(f"   ✅ Found: {found} (threshold: {threshold})")
+        if _should_emit_cv_debug():
+            print("🎯 CV Age Icon Detection:")
+            print(f"   📍 Center: ({center_x}, {center_y})")
+            print(f"   📐 Template size: {tw}x{th}")
+            print(f"   🎯 Confidence: {confidence:.3f}")
+            print(f"   ✅ Found: {found} (threshold: {threshold})")
 
         return {
             'found': found,
@@ -1048,7 +1146,8 @@ def detect_age_icon_cv_multi(
                 os.makedirs("images", exist_ok=True)
                 cv2.imwrite(dbg_path, dbg)
                 best['debug_image_path'] = dbg_path
-                print(f"🖼️  {kind.title()} icon debug overlay: {dbg_path}")
+                if _should_emit_cv_debug():
+                    print(f"🖼️  {kind.title()} icon debug overlay: {dbg_path}")
                 # Save top-3 candidates JSON alongside the overlay for quick inspection
                 try:
                     top3 = sorted(top_candidates, key=lambda c: c.get("confidence", 0.0), reverse=True)[:3]
@@ -1061,8 +1160,9 @@ def detect_age_icon_cv_multi(
             except Exception as _:
                 pass
 
-        print(f"🎯 {label.title()} icon multi-scale result: found={best['found']} conf={best['confidence']:.3f} scale={best['scale']:.2f} tpl={os.path.basename(best.get('template_used',''))}")
-        print(f"[CV] {label} ROI=({roi_top:.2f},{roi_bottom:.2f}) y0={y0} y1={y1} cov={(roi_bottom - roi_top):.2f} x={best.get('x',0)} y={best.get('y',0)}")
+        if _should_emit_cv_debug():
+            print(f"🎯 {label.title()} icon multi-scale result: found={best['found']} conf={best['confidence']:.3f} scale={best['scale']:.2f} tpl={os.path.basename(best.get('template_used',''))}")
+            print(f"[CV] {label} ROI=({roi_top:.2f},{roi_bottom:.2f}) y0={y0} y1={y1} cov={(roi_bottom - roi_top):.2f} x={best.get('x',0)} y={best.get('y',0)}")
         return best
 
     except Exception as e:
@@ -1337,7 +1437,8 @@ def detect_age_row_dual_templates(
         try:
             os.makedirs("images", exist_ok=True)
             cv2.imwrite(dbg_path, dbg)
-            print(f"🖼️  Dual-icon debug overlay: {dbg_path}")
+            if _should_emit_cv_debug():
+                print(f"🖼️  Dual-icon debug overlay: {dbg_path}")
         except Exception:
             dbg_path = ""
 
@@ -1416,7 +1517,8 @@ def infer_carousel_y_by_edges(
         try:
             os.makedirs("images", exist_ok=True)
             cv2.imwrite(dbg_path, dbg)
-            print(f"🖼️  Carousel Y debug overlay: {dbg_path} (y={y_guess}, score={score:.1f})")
+            if _should_emit_cv_debug():
+                print(f"🖼️  Carousel Y debug overlay: {dbg_path} (y={y_guess}, score={score:.1f})")
         except Exception:
             pass
 
@@ -1463,10 +1565,11 @@ def are_images_similar(path1: str, path2: str, hash_size: int = 8, threshold: in
     h1 = perceptual_hash_ahash(path1, hash_size=hash_size)
     h2 = perceptual_hash_ahash(path2, hash_size=hash_size)
     dist = hamming_distance(h1, h2)
-    try:
-        print(f"🧮 aHash compare: dist={dist} (threshold={threshold}) for:\n  {os.path.basename(path1)}\n  {os.path.basename(path2)}")
-    except Exception:
-        pass
+    if _should_emit_cv_debug():
+        try:
+            print(f"🧮 aHash compare: dist={dist} (threshold={threshold}) for:\n  {os.path.basename(path1)}\n  {os.path.basename(path2)}")
+        except Exception:
+            pass
     return dist <= threshold
 
 
@@ -1526,6 +1629,114 @@ def are_images_similar_roi(
         hbits2 = (small2.flatten() > avg2)
         dist = hamming_distance(hbits1, hbits2)
 
+        if _should_emit_cv_debug():
+            try:
+                print(
+                    f"🧮 aHash ROI compare: y={y_center} band_px={band_px} "
+                    f"dist={dist} (threshold={threshold}) for:\n  {os.path.basename(path1)}[{y0_1}:{y1_1}]\n  {os.path.basename(path2)}[{y0_2}:{y1_2}]"
+                )
+            except Exception:
+                pass
+
+        return dist <= threshold
+    except Exception:
+        # On any error, fall back to full-frame compare
+        return are_images_similar(path1, path2, hash_size=hash_size, threshold=threshold)
+
+
+def verify_profile_change_ahash(
+    prev_top_path: str,
+    prev_bottom_path: str,
+    new_top_path: str,
+    hash_size: int = 8,
+    threshold: int = 5
+) -> dict:
+    """
+    Verify profile change using simple aHash Hamming distance on full-frame hashes.
+    Rule:
+      - Compute dist(new_top, prev_top) and dist(new_top, prev_bottom)
+      - If both distances > threshold => profile_changed = True (confidence=1.0)
+      - Else profile_changed = False (confidence=0.3)
+
+    Returns:
+      {
+        "profile_changed": bool,
+        "confidence": float,
+        "distances": {"top": int, "bottom": int},
+        "threshold": int
+      }
+    """
+    try:
+        h_prev_top = perceptual_hash_ahash(prev_top_path, hash_size=hash_size)
+        h_prev_bot = perceptual_hash_ahash(prev_bottom_path, hash_size=hash_size)
+        h_new = perceptual_hash_ahash(new_top_path, hash_size=hash_size)
+
+        # If any hash is empty, treat as unknown => no change
+        if h_prev_top.size == 0 or h_prev_bot.size == 0 or h_new.size == 0:
+            if _is_verbose_console():
+                print("⚠️  aHash verification: one or more images failed to load; assuming unchanged.")
+            return {
+                "profile_changed": False,
+                "confidence": 0.3,
+                "distances": {"top": 0, "bottom": 0},
+                "threshold": int(threshold),
+            }
+
+        dist_top = hamming_distance(h_prev_top, h_new)
+        dist_bot = hamming_distance(h_prev_bot, h_new)
+        # Relaxed change detection: consider profile changed if either band exceeds threshold
+        changed = (dist_top > int(threshold)) or (dist_bot > int(threshold))
+        confidence = 1.0 if changed else 0.3
+
+        if _is_verbose_console():
+            print(f"🔎 aHash verify: dist_top={dist_top} dist_bottom={dist_bot} thr={threshold} -> changed={changed}")
+
+        return {
+            "profile_changed": bool(changed),
+            "confidence": float(confidence),
+            "distances": {"top": int(dist_top), "bottom": int(dist_bot)},
+            "threshold": int(threshold),
+        }
+    except Exception as e:
+        print(f"❌ aHash verification failed: {e}")
+        return {
+            "profile_changed": False,
+            "confidence": 0.3,
+            "distances": {"top": 0, "bottom": 0},
+            "threshold": int(threshold),
+        }
+
+
+        # Compute band height
+        if band_px is None or band_px <= 0:
+            band_px = max(8, int(round(min(h1, h2) * float(band_ratio if band_ratio is not None else 0.12))))
+
+        def _crop_band(gray, yc, band):
+            hh = gray.shape[0]
+            y0 = max(0, int(yc - band // 2))
+            y1 = min(hh, y0 + band)
+            if y1 - y0 < 4:
+                # Fallback: center band of minimum height
+                y0 = max(0, min(hh - 4, int(hh * 0.5) - 2))
+                y1 = min(hh, y0 + 4)
+            return gray[y0:y1, :], (y0, y1)
+
+        roi1, (y0_1, y1_1) = _crop_band(img1, y_center, band_px)
+        roi2, (y0_2, y1_2) = _crop_band(img2, y_center, band_px)
+
+        # If ROI invalid/small, fall back to full
+        if roi1.size == 0 or roi2.size == 0 or roi1.shape[0] < 4 or roi2.shape[0] < 4:
+            return are_images_similar(path1, path2, hash_size=hash_size, threshold=threshold)
+
+        # aHash over ROI
+        small1 = cv2.resize(roi1, (hash_size, hash_size), interpolation=cv2.INTER_AREA)
+        small2 = cv2.resize(roi2, (hash_size, hash_size), interpolation=cv2.INTER_AREA)
+        avg1 = small1.mean()
+        avg2 = small2.mean()
+        hbits1 = (small1.flatten() > avg1)
+        hbits2 = (small2.flatten() > avg2)
+        dist = hamming_distance(hbits1, hbits2)
+
         try:
             print(
                 f"🧮 aHash ROI compare: y={y_center} band_px={band_px} "
@@ -1533,8 +1744,3 @@ def are_images_similar_roi(
             )
         except Exception:
             pass
-
-        return dist <= threshold
-    except Exception:
-        # On any error, fall back to full-frame compare
-        return are_images_similar(path1, path2, hash_size=hash_size, threshold=threshold)

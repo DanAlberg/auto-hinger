@@ -47,7 +47,7 @@ Launch options
   uv run python main_agent.py
   ```
 
-- Dry-run (exercise full flow, skip LIKE/SEND taps):
+- Dry-run (exercise full flow, skip LIKE/SEND/DISLIKE taps):
   ```
   cd app
   uv run python main_agent.py --profiles 1 --dry-run
@@ -68,14 +68,14 @@ CLI options
 - --manual-confirm, --confirm-steps  Require confirmation before each step; logs actions to logs/ (default: disabled)
 - --like-mode {priority,normal} Prefer the send button variant (default: priority)
 - --ai-routing                 Enable an alternative routing mode (off by default)
-- --dry-run                    Run full logic but skip LIKE/SEND taps
+- --dry-run                    Run full logic but skip LIKE/SEND/DISLIKE taps
 - --skip-precheck, --no-precheck  Bypass startup like-button pre-check
 
 Behavior and defaults
 - Default action is like-with-comment. Falls back to like-only if typing/sending fails or the comment UI doesn’t appear.
 - Priority send preferred by default; normal send used if priority is unavailable.
 - Startup pre-check ensures the app begins at the top of the Hinge feed (Like visible); otherwise exits with guidance. For testing, you can bypass this with --skip-precheck.
-- Manual confirm is off by default; enable with --confirm-steps for safety when testing.
+- Manual confirm is off by default; enable with --confirm-steps to require approval only for irreversible taps (LIKE/DISLIKE). Normal analysis/scroll/LLM steps run without prompts. An additional confirm-before-send option can gate the Send tap when enabled.
 
 Outputs
 - Database: profiles.db at repository root
@@ -105,7 +105,7 @@ Architecture
 - Configuration: app/agent_config.py
   - Centralized runtime flags and mode toggles
 - Assets: app/assets/
-  - Template images for CV matching (like_button.png, comment_field.png, send_button.png, send_priority_button.png)
+  - Template images for CV matching (like_button.png, dislike_button.png, comment_field.png, send_button.png, send_priority_button.png)
   - Swap with device-specific crops if matching is unreliable
 
 Troubleshooting

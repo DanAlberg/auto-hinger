@@ -107,7 +107,9 @@ def init_db(db_path: Optional[str] = None) -> None:
                 opening_pick_text TEXT,
                 -- Verdict (LIKE/DISLIKE) + reason
                 verdict TEXT,
-                decision_reason TEXT
+                decision_reason TEXT,
+                -- Machine-readable LLM metrics (JSON per row)
+                llm_metrics_json TEXT
             );
             """
         )
@@ -140,6 +142,7 @@ def init_db(db_path: Optional[str] = None) -> None:
             "ALTER TABLE profiles ADD COLUMN opening_pick_text TEXT;",
             "ALTER TABLE profiles ADD COLUMN verdict TEXT;",
             "ALTER TABLE profiles ADD COLUMN decision_reason TEXT;",
+            "ALTER TABLE profiles ADD COLUMN llm_metrics_json TEXT;",
         ]:
             try:
                 cur.execute(ddl)
@@ -303,6 +306,47 @@ def update_profile_verdict(
         cur.execute(
             "UPDATE profiles SET verdict = ?, decision_reason = ? WHERE id = ?",
             ((verdict or "").strip().upper(), decision_reason or "", int(profile_id))
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def update_profile_llm_metrics(
+    profile_id: int,
+    metrics_update: Dict[str, Any],
+    db_path: Optional[str] = None
+) -> None:
+    """
+    Merge provided LLM metrics dict into the row's llm_metrics_json field.
+    metrics_update shape example:
+      {"profile_scrape": {"model": "gpt-5-mini", "duration_ms": 123, "ts": "..."}, ...}
+    Shallow merge by top-level key (per call name).
+    """
+    if not isinstance(metrics_update, dict) or not metrics_update:
+        return
+    db_path = db_path or get_db_path()
+    con = sqlite3.connect(db_path)
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT llm_metrics_json FROM profiles WHERE id = ? LIMIT 1;", (int(profile_id),))
+        row = cur.fetchone()
+        try:
+            import json as _json
+            existing = _json.loads(row[0]) if row and row[0] else {}
+            if not isinstance(existing, dict):
+                existing = {}
+        except Exception:
+            existing = {}
+        # Shallow merge
+        merged = {**existing, **metrics_update}
+        try:
+            json_text = _json.dumps(merged, ensure_ascii=False)
+        except Exception:
+            json_text = "{}"
+        cur.execute(
+            "UPDATE profiles SET llm_metrics_json = ? WHERE id = ?",
+            (json_text, int(profile_id))
         )
         con.commit()
     finally:
