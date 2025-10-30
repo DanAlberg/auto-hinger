@@ -22,11 +22,11 @@ from analyzer import (
     find_ui_elements, analyze_profile_scroll_content,
     detect_comment_ui_elements, generate_comment, generate_contextual_date_comment
 )
-from batch_payload import build_llm_batch_payload, build_profile_prompt, run_opening_style
+from batch_payload import build_llm_batch_payload, build_profile_prompt, run_opening_style, run_opening_messages, run_opening_pick
 from data_store import store_generated_comment, calculate_template_success_rates
 from prompt_engine import update_template_weights
 from profile_export import ProfileExporter
-from profile_eval import evaluate_profile_fields
+from profile_eval import evaluate_profile_fields, compute_profile_score
 import hashlib
 from cv_biometrics import extract_biometrics_from_carousel
 
@@ -348,9 +348,9 @@ class LangGraphHingeAgent:
     def initialize_session_node(self, state: HingeAgentState) -> HingeAgentState:
         """Initialize the automation session"""
         print("🚀 Initializing LangGraph Hinge automation session...")
-        # Gate CV per-template debug overlays when scrape-only or verbose logging
+        # Gate CV per-template debug overlays when verbose logging
         try:
-            os.environ["HINGE_CV_DEBUG_MODE"] = "1" if (getattr(self.config, "scrape_only", False) or getattr(self.config, "verbose_logging", False)) else "0"
+            os.environ["HINGE_CV_DEBUG_MODE"] = "1" if getattr(self.config, "verbose_logging", False) else "0"
         except Exception:
             pass
         
@@ -1025,13 +1025,26 @@ class LangGraphHingeAgent:
             eval_result = {}
             try:
                 t0_eval = time.perf_counter()
-                eval_result = evaluate_profile_fields(extracted_profile, model=getattr(self.config, "extraction_model", "gpt-5"))
+                eval_result = evaluate_profile_fields(extracted_profile, model="gpt-5-mini")
                 try:
                     timings["profile_eval_ms"] = int((time.perf_counter() - t0_eval) * 1000)
                 except Exception:
                     pass
             except Exception as _e:
                 print(f"⚠️ profile_eval exception: {_e}")
+
+            # Compute final score and decision from extracted + enrichment
+            score_result = {}
+            try:
+                score_result = compute_profile_score(extracted_profile, eval_result)
+                if getattr(self.config, "verbose_logging", False):
+                    try:
+                        print("[SCORER JSON score_result]")
+                        print(json.dumps(score_result, indent=2)[:2000])
+                    except Exception:
+                        pass
+            except Exception as _e:
+                print(f"⚠️ scorer exception: {_e}")
 
             current_screenshot = all_screenshots[-1] if all_screenshots else state['current_screenshot']
             try:
@@ -1045,6 +1058,7 @@ class LangGraphHingeAgent:
                 "profile_analysis": extracted_profile,
                 "extracted_profile": extracted_profile,
                 "profile_eval": eval_result,
+                "score_result": score_result,
                 "extraction_failed": extraction_failed,
                 "llm_batch_request": llm_payload,
                 "cv_biometrics": (cv_result.get("biometrics", {}) if isinstance(cv_result, dict) else {}),
@@ -1491,7 +1505,7 @@ class LangGraphHingeAgent:
             ),
         }
 
-        model = getattr(self.config, "extraction_model", "gpt-5-mini") or "gpt-5-mini"
+        model = "gpt-5-mini"
         # First attempt
         def _call(msgs):
             t0 = time.perf_counter()
@@ -1710,31 +1724,24 @@ class LangGraphHingeAgent:
         """Make like/dislike decision based on profile analysis"""
         print("🎯 Making like/dislike decision...")
         
-        analysis = state.get("profile_analysis", {})
-        quality = analysis.get('profile_quality_score', 0)
-        potential = analysis.get('conversation_potential', 0)
-        red_flags = analysis.get('red_flags', [])
-        positive_indicators = analysis.get('positive_indicators', [])
-        
-        # Decision logic
-        should_like = False
-        reason = "Default: not meeting criteria"
-        
-        if red_flags:
-            should_like = False
-            reason = f"Red flags: {', '.join(red_flags[:2])}"
-        elif quality >= self.config.quality_threshold_high and potential >= self.config.conversation_threshold_high:
-            should_like = True
-            reason = f"Excellent profile (quality: {quality}, potential: {potential})"
-        elif quality >= self.config.quality_threshold_medium and len(positive_indicators) >= self.config.min_positive_indicators:
-            should_like = True
-            reason = f"Good profile with positives: {', '.join(positive_indicators[:2])}"
-        elif len(state["profile_text"]) > self.config.min_text_length_detailed and quality >= self.config.min_quality_for_detailed:
-            should_like = True
-            reason = "Detailed profile with decent quality"
+        # Scorer-driven decision only (remove legacy heuristics)
+        score_result = state.get("score_result", {}) or {}
+        decision = (score_result.get("decision") or "").upper()
+        should_like = (decision == "LIKE")
+        # Derive a concise reason from top contributors (fallback to scorer reason)
+        reason = ""
+        try:
+            top = score_result.get("top_contributors") or []
+            if isinstance(top, list) and top:
+                parts = [f"{t.get('field','')}={t.get('value','')}({t.get('delta','')})" for t in top[:3] if isinstance(t, dict)]
+                reason = " | ".join([p for p in parts if p])
+            if not reason:
+                reason = score_result.get("reason") or ""
+        except Exception:
+            reason = ""
         
         print(f"🎯 DECISION: {'💖 LIKE' if should_like else '👎 DISLIKE'} - {reason}")
-        
+        analysis = state.get("profile_analysis", {})
         return {
             **state,
             "decision_reason": reason,
@@ -2688,18 +2695,50 @@ class LangGraphHingeAgent:
                     "analysis": analysis
                 })
                 export_db_ms = int((time.perf_counter() - t0_exp) * 1000)
-                opener_ms = 0
+                # Persist verdict + reason
                 try:
-                    t0_op = time.perf_counter()
-                    run_opening_style(profile_id=pid)
-                    opener_ms = int((time.perf_counter() - t0_op) * 1000)
+                    from sqlite_store import update_profile_verdict as _upd_verdict
+                    verdict = ""
+                    try:
+                        verdict = (state.get("score_result", {}).get("decision") or "").upper()
+                    except Exception:
+                        verdict = ""
+                    decision_reason = state.get("decision_reason", "") or ""
+                    _upd_verdict(pid, verdict, decision_reason)
                 except Exception as _e:
-                    print(f"[opener] failed: {_e}")
+                    print(f"[verdict] update failed: {_e}")
+
+                opener_ms = 0
+                messages_ms = 0
+                pick_ms = 0
+                # Run downstream LLMs only for LIKE
+                should_run_downstream = (state.get("score_result", {}).get("decision", "").upper() == "LIKE")
+                if should_run_downstream:
+                    try:
+                        t0_op = time.perf_counter()
+                        run_opening_style(profile_id=pid)
+                        opener_ms = int((time.perf_counter() - t0_op) * 1000)
+                    except Exception as _e:
+                        print(f"[opener] failed: {_e}")
+                    try:
+                        t0_msg = time.perf_counter()
+                        run_opening_messages(profile_id=pid, model="gpt-5-mini")
+                        messages_ms = int((time.perf_counter() - t0_msg) * 1000)
+                    except Exception as _e:
+                        print(f"[messages] failed: {_e}")
+                    try:
+                        t0_pick = time.perf_counter()
+                        run_opening_pick(profile_id=pid, model="gpt-5")
+                        pick_ms = int((time.perf_counter() - t0_pick) * 1000)
+                    except Exception as _e:
+                        print(f"[pick] failed: {_e}")
                 # Consolidated timings summary (print once per profile)
                 try:
                     tdict = dict(state.get("timings", {})) if isinstance(state.get("timings", {}), dict) else {}
                     tdict["export_db_ms"] = export_db_ms
                     tdict["opener_ms"] = opener_ms
+                    tdict["messages_ms"] = messages_ms
+                    tdict["pick_ms"] = pick_ms
                     order = [
                         ("scan_total_ms", "scan_total"),
                         ("vertical_settle_scroll_ms", "vertical_settle_scroll"),
@@ -2711,6 +2750,8 @@ class LangGraphHingeAgent:
                         ("profile_eval_ms", "profile_eval"),
                         ("export_db_ms", "export_db"),
                         ("opener_ms", "opener"),
+                        ("messages_ms", "messages"),
+                        ("pick_ms", "pick"),
                     ]
                     print("TIMINGS (ms)")
                     for k, label in order:
@@ -2828,18 +2869,49 @@ class LangGraphHingeAgent:
             t0_exp2 = time.perf_counter()
             pid = self.exporter.append_row(row)
             export_db_ms2 = int((time.perf_counter() - t0_exp2) * 1000)
-            opener_ms2 = 0
+            # Persist verdict + reason
             try:
-                t0_op2 = time.perf_counter()
-                run_opening_style(profile_id=pid)
-                opener_ms2 = int((time.perf_counter() - t0_op2) * 1000)
+                from sqlite_store import update_profile_verdict as _upd_verdict
+                verdict2 = ""
+                try:
+                    verdict2 = (state.get("score_result", {}).get("decision") or "").upper()
+                except Exception:
+                    verdict2 = ""
+                decision_reason2 = state.get("decision_reason", "") or ""
+                _upd_verdict(pid, verdict2, decision_reason2)
             except Exception as _e:
-                print(f"[opener] failed: {_e}")
+                print(f"[verdict] update failed: {_e}")
+
+            opener_ms2 = 0
+            messages_ms2 = 0
+            pick_ms2 = 0
+            should_run_downstream2 = (state.get("score_result", {}).get("decision", "").upper() == "LIKE")
+            if should_run_downstream2:
+                try:
+                    t0_op2 = time.perf_counter()
+                    run_opening_style(profile_id=pid)
+                    opener_ms2 = int((time.perf_counter() - t0_op2) * 1000)
+                except Exception as _e:
+                    print(f"[opener] failed: {_e}")
+                try:
+                    t0_msg2 = time.perf_counter()
+                    run_opening_messages(profile_id=pid, model="gpt-5-mini")
+                    messages_ms2 = int((time.perf_counter() - t0_msg2) * 1000)
+                except Exception as _e:
+                    print(f"[messages] failed: {_e}")
+                try:
+                    t0_pick2 = time.perf_counter()
+                    run_opening_pick(profile_id=pid, model="gpt-5")
+                    pick_ms2 = int((time.perf_counter() - t0_pick2) * 1000)
+                except Exception as _e:
+                    print(f"[pick] failed: {_e}")
             # Consolidated timings summary (print once per profile)
             try:
                 tdict = dict(state.get("timings", {})) if isinstance(state.get("timings", {}), dict) else {}
                 tdict["export_db_ms"] = export_db_ms2
                 tdict["opener_ms"] = opener_ms2
+                tdict["messages_ms"] = messages_ms2
+                tdict["pick_ms"] = pick_ms2
                 order = [
                     ("scan_total_ms", "scan_total"),
                     ("vertical_settle_scroll_ms", "vertical_settle_scroll"),
@@ -2851,6 +2923,8 @@ class LangGraphHingeAgent:
                     ("profile_eval_ms", "profile_eval"),
                     ("export_db_ms", "export_db"),
                     ("opener_ms", "opener"),
+                    ("messages_ms", "messages"),
+                    ("pick_ms", "pick"),
                 ]
                 print("TIMINGS (ms)")
                 for k, label in order:
@@ -2886,23 +2960,6 @@ class LangGraphHingeAgent:
         """
         s = state
 
-        # Scrape-only mode: extract full profile and stop (no navigation)
-        if getattr(self.config, "scrape_only", False):
-            s = self.capture_screenshot_node(s)
-            if not s.get("action_successful"):
-                return self._fail(s, "Failed to capture screenshot (scrape-only)", "capture_screenshot")
-            s = self.analyze_profile_node(s)
-            if not s.get("action_successful"):
-                return self._fail(s, "Failed to analyze profile (scrape-only)", "analyze_profile")
-            # Export the scraped profile and stop
-            try:
-                self._export_profile_row(s, False, s.get("current_screenshot"))
-            except Exception as _e:
-                print(f"⚠️  Export failed (scrape-only): {_e}")
-            s["profiles_processed"] = s.get("profiles_processed", 0) + 1
-            s["should_continue"] = False
-            s["completion_reason"] = "Scrape-only completed"
-            return s
 
         # 1) Capture screenshot
         s = self.capture_screenshot_node(s)
@@ -2920,6 +2977,16 @@ class LangGraphHingeAgent:
             return self._fail(s, "Failed to make like/dislike decision", "make_like_decision")
 
         should_like = bool(s.get("profile_analysis", {}).get("should_like", False))
+
+        # Dry-run: end at decision. If like → export + opener, else end. No UI taps.
+        if getattr(self.config, "dry_run", False):
+            try:
+                self._export_profile_row(s, False, s.get("current_screenshot"))
+            except Exception as _e:
+                print(f"⚠️  Export failed (dry-run): {_e}")
+            s["should_continue"] = False
+            s["completion_reason"] = "Dry-run decision completed"
+            return s
 
         if should_like:
             # 4) Find like button (CV)
@@ -2955,6 +3022,10 @@ class LangGraphHingeAgent:
 
         else:
             # Dislike path
+            try:
+                self._export_profile_row(s, False, s.get("current_screenshot"))
+            except Exception as _e:
+                print(f"⚠️  Export failed (dislike): {_e}")
             s = self.execute_dislike_node(s)
             if not s.get("action_successful"):
                 return self._fail(s, "Failed to execute dislike", "execute_dislike")
@@ -3029,14 +3100,18 @@ class LangGraphHingeAgent:
             }
 
         # Process profiles deterministically
-        for idx in range(self.max_profiles):
-            if not s.get("should_continue", True):
-                break
-            # Ensure index is set for logging
-            s["current_profile_index"] = idx
-            s = self.run_profile_flowchart(s)
-            if not s.get("should_continue", True):
-                break
+        try:
+            for idx in range(self.max_profiles):
+                if not s.get("should_continue", True):
+                    break
+                # Ensure index is set for logging
+                s["current_profile_index"] = idx
+                s = self.run_profile_flowchart(s)
+                if not s.get("should_continue", True):
+                    break
+        except KeyboardInterrupt:
+            print("\n⚠️  Interrupted by user; finalizing session...")
+            s = self.finalize_session_node(s)
 
         # Finalize
         s = self.finalize_session_node(s)

@@ -151,7 +151,6 @@ class AgentConfig:
     # Deterministic control & settings
     deterministic_mode: bool = True
     like_mode: str = "priority"  # "priority" or "normal"
-    scrape_only: bool = False
     export_dir: str = "logs"
     precheck_strict: bool = True
     sync_check_at_stages: bool = True

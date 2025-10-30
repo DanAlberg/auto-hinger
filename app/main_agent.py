@@ -82,12 +82,6 @@ def parse_arguments():
         help="Testing mode: do not tap LIKE or SEND. No actual likes/comments are sent."
     )
     parser.add_argument(
-        "--scrape-only",
-        dest="scrape_only",
-        action="store_true",
-        help="Scrape profile content only; do not like or dislike."
-    )
-    parser.add_argument(
         "--skip-precheck", "--no-precheck",
         dest="skip_precheck",
         action="store_true",
@@ -119,7 +113,6 @@ def get_config(config_name: str, args) -> AgentConfig:
     config.like_mode = args.like_mode
     config.deterministic_mode = not args.ai_routing
     config.dry_run = getattr(args, "dry_run", False)
-    config.scrape_only = getattr(args, "scrape_only", False)
     # Temporary bypass for startup pre-check (like button visibility)
     try:
         config.precheck_strict = not getattr(args, "skip_precheck", False)
@@ -178,8 +171,7 @@ async def main():
         print(f"🏷️ Like Mode: {config.like_mode}")
         print(f"🧭 Deterministic Mode: {config.deterministic_mode}")
         print(f"🧪 Dry Run Mode: {getattr(config, 'dry_run', False)}")
-        print(f"🧲 Scrape Only Mode: {getattr(config, 'scrape_only', False)}")
-        print(f"🛡️ Precheck Strict: {getattr(config, 'precheck_strict', True)}")
+        print(f"️ Precheck Strict: {getattr(config, 'precheck_strict', True)}")
         print(f"🤖 AI Controller: OpenAI + LangGraph")
         print()
         
@@ -206,7 +198,7 @@ async def main():
         # Timing end and summary
         ended_at_dt = datetime.now(timezone.utc)
         duration_seconds = round(time.perf_counter() - start_perf, 3)
-        mode = "scrape_only" if getattr(config, "scrape_only", False) else ("dry_run" if getattr(config, "dry_run", False) else "default")
+        mode = "dry_run" if getattr(config, "dry_run", False) else "default"
         summary = {
             "started_at": started_at_dt.isoformat(),
             "ended_at": ended_at_dt.isoformat(),

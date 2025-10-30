@@ -176,6 +176,19 @@ _PROFILE_FIELDS = [
     "Photo4_desc",
     "Photo5_desc",
     "Photo6_desc",
+    # Opener style fields (for building opening_messages prompt)
+    "primary_style",
+    "flirty",
+    "complimentary",
+    "playful_witty",
+    "observational",
+    "shared_interest",
+    "genuinely_warm",
+    "relationship_forward",
+    "overall_confidence",
+    "rationale",
+    # Opening messages storage (JSON blob)
+    "opening_messages_json",
 ]
 
 
@@ -282,10 +295,187 @@ def run_opening_style(profile_id: Optional[int] = None, db_path: Optional[str] =
     # Call LLM (JSON-only)
     result = analyzer_openai.chat_json_system_user(system_prompt, user_prompt, model=model)
 
-    
-
     # Persist flattened weights and other fields to DB
     update_profile_opener_fields(pid, result, db_path=db_path)
+
+    return result
+
+
+# ---------------- Opening-messages (uses scraped profile + opening_style result) ----------------
+
+def _build_profile_json_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Compact JSON reflecting scraped content, for embedding in the opening-messages prompt."""
+    def _v(k): 
+        v = row.get(k)
+        if isinstance(v, str):
+            return v.strip()
+        return v
+    # Height as N cm string
+    height_cm = row.get("Height_cm")
+    height_str = None
+    try:
+        if height_cm is not None and str(height_cm).strip() != "":
+            hv = int(float(height_cm))
+            if hv > 0:
+                height_str = f"{hv} cm"
+    except Exception:
+        height_str = None
+
+    # Prompts array
+    prompts = []
+    for i in (1, 2, 3):
+        p = (_v(f"prompt_{i}") or "")
+        a = (_v(f"answer_{i}") or "")
+        if p or a:
+            prompts.append({"prompt": p, "answer": a})
+
+    # Photos
+    photos = []
+    for i in (1, 2, 3, 4, 5, 6):
+        desc = _v(f"Photo{i}_desc") or ""
+        if desc:
+            photos.append({"index": i, "description": desc})
+
+    prof = {
+        "Name": _v("Name"),
+        "Gender": _v("Gender"),
+        "Sexuality": _v("Sexuality"),
+        "Age": _v("Age"),
+        "Height": height_str,
+        "Location": _v("Location"),
+        "Ethnicity": _v("Ethnicity"),
+        "Children": _v("Children"),
+        "Family plans": _v("Family_plans"),
+        "Covid Vaccine": _v("Covid_vaccine"),
+        "Pets": _v("Pets"),
+        "Zodiac Sign": _v("Zodiac_Sign"),
+        "Job title": _v("Job_title"),
+        "University": _v("University"),
+        "Religious Beliefs": _v("Religious_Beliefs"),
+        "Home town": _v("Home_town"),
+        "Politics": _v("Politics"),
+        "Languages spoken": _v("Languages_spoken"),
+        "Dating Intentions": _v("Dating_Intentions"),
+        "Relationship type": _v("Relationship_type"),
+        "Drinking": _v("Drinking"),
+        "Smoking": _v("Smoking"),
+        "Marijuana": _v("Marijuana"),
+        "Drugs": _v("Drugs"),
+        "Profile Prompts and Answers": prompts,
+        "Other text on profile not covered by above": _v("Other_text"),
+        "Description of any non-photo media (For example poll, voice note)": _v("Media_description"),
+        "Photos": photos,
+    }
+    return prof
+
+
+def _build_opening_style_json_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Construct opening_style JSON from saved columns for use in the opening-messages prompt."""
+    import json
+    def _float(x):
+        try:
+            return float(x)
+        except Exception:
+            return 0.0
+
+    style = {
+        "primary_style": (row.get("primary_style") or "").strip(),
+        "style_weights": {
+            "flirty": _float(row.get("flirty")),
+            "complimentary": _float(row.get("complimentary")),
+            "playful_witty": _float(row.get("playful_witty")),
+            "observational": _float(row.get("observational")),
+            "shared_interest": _float(row.get("shared_interest")),
+            "genuinely_warm": _float(row.get("genuinely_warm")),
+            "relationship_forward": _float(row.get("relationship_forward")),
+        },
+        "overall_confidence": _float(row.get("overall_confidence")),
+        "rationale": row.get("rationale") or ""
+    }
+    return style
+
+
+def run_opening_messages(profile_id: Optional[int] = None, db_path: Optional[str] = None, model: str = "gpt-4o") -> Dict[str, Any]:
+    """
+    Execute the opening-messages LLM request for a given profile id (or latest if None).
+    Uses scraped profile JSON + opening-style JSON; persists full JSON to opening_messages_json.
+    """
+    # Select source row
+    row: Optional[Dict[str, Any]]
+    if profile_id is not None:
+        row = fetch_profile_by_id(int(profile_id), db_path=db_path)
+    else:
+        latest = fetch_latest_profiles(limit=1, db_path=db_path)
+        row = latest[0] if latest else None
+
+    if not row:
+        print("[opening_messages] No profile row found.")
+        return {}
+
+    pid = int(row["id"])
+    profile_json = _build_profile_json_from_row(row)
+    opening_style_json = _build_opening_style_json_from_row(row)
+
+    # Build prompts
+    system_prompt, user_prompt = prompt_engine.build_opening_messages_prompts(profile_json, opening_style_json)
+
+    # Call LLM (JSON-only) with gpt-5 as requested
+    result = analyzer_openai.chat_json_system_user(system_prompt, user_prompt, model=model)
+
+    # Persist JSON blob
+    from sqlite_store import update_profile_opening_messages_json
+    update_profile_opening_messages_json(pid, result, db_path=db_path)
+
+    return result
+
+
+def run_opening_pick(profile_id: Optional[int] = None, db_path: Optional[str] = None, model: str = "gpt-5") -> Dict[str, Any]:
+    """
+    Execute the opening-pick LLM request for a given profile id (or latest if None).
+    Requires opening_messages_json to be present on the row.
+    Persists the full selection JSON and chosen_text into dedicated columns.
+    """
+    # Select source row
+    row: Optional[Dict[str, Any]]
+    if profile_id is not None:
+        row = fetch_profile_by_id(int(profile_id), db_path=db_path)
+    else:
+        latest = fetch_latest_profiles(limit=1, db_path=db_path)
+        row = latest[0] if latest else None
+
+    if not row:
+        print("[opening_pick] No profile row found.")
+        return {}
+
+    pid = int(row["id"])
+
+    # Parse generated openers from previous step
+    import json as _json
+    generated_openers_json = {}
+    try:
+        raw = row.get("opening_messages_json") or "{}"
+        generated_openers_json = _json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except Exception as _e:
+        print(f"[opening_pick] invalid opening_messages_json: {_e}")
+        generated_openers_json = {}
+
+    if not isinstance(generated_openers_json, dict) or not isinstance(generated_openers_json.get("openers"), list) or len(generated_openers_json["openers"]) == 0:
+        print("[opening_pick] Missing or empty generated openers; skipping pick.")
+        return {}
+
+    # Build inputs
+    profile_json = _build_profile_json_from_row(row)
+    opening_style_json = _build_opening_style_json_from_row(row)
+
+    # Prompts
+    system_prompt, user_prompt = prompt_engine.build_opening_pick_prompts(profile_json, opening_style_json, generated_openers_json)
+
+    # Call LLM (JSON-only) with gpt-5
+    result = analyzer_openai.chat_json_system_user(system_prompt, user_prompt, model=model)
+
+    # Persist selection (full JSON + chosen_text)
+    from sqlite_store import update_profile_opening_pick
+    update_profile_opening_pick(pid, result, db_path=db_path)
 
     return result
 

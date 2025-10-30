@@ -30,7 +30,7 @@ def ensure_adb_running():
 
 
 def _should_emit_cv_debug() -> bool:
-    """Gate additional per-template CV overlays by env var set from config (scrape-only/verbose)."""
+    """Gate additional per-template CV overlays by env var set from config (verbose)."""
     try:
         return os.environ.get("HINGE_CV_DEBUG_MODE", "0") == "1"
     except Exception:
