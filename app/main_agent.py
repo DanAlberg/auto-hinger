@@ -13,7 +13,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from langgraph_hinge_agent import LangGraphHingeAgent
+from hinge_agent import HingeAgent
 from helper_functions import ensure_adb_running
 from agent_config import AgentConfig, DEFAULT_CONFIG, FAST_CONFIG
 
@@ -125,7 +125,7 @@ def get_config(config_name: str, args) -> AgentConfig:
 def print_session_summary(result: Dict[str, Any]):
     """Print a summary of the automation session"""
     print("\n" + "="*60)
-    print("🤖 LANGGRAPH + OPENAI HINGE AUTOMATION SUMMARY")
+    print("🤖 HINGE AUTOMATION SUMMARY")
     print("="*60)
     print(f"📊 Profiles Processed: {result.get('profiles_processed', 0)}")
     print(f"💖 Likes Sent: {result.get('likes_sent', 0)}")
@@ -147,7 +147,7 @@ def print_session_summary(result: Dict[str, Any]):
 
 async def main():
     """Main entry point for the OpenAI-controlled agent"""
-    print("🤖 Starting LangGraph-Powered Hinge Automation Agent")
+    print("🤖 Starting Hinge Automation Agent")
     print("="*55)
     
     try:
@@ -172,18 +172,18 @@ async def main():
         print(f"🧭 Deterministic Mode: {config.deterministic_mode}")
         print(f"🧪 Dry Run Mode: {getattr(config, 'dry_run', False)}")
         print(f"️ Precheck Strict: {getattr(config, 'precheck_strict', True)}")
-        print(f"🤖 AI Controller: OpenAI + LangGraph")
+        print(f"🤖 AI Controller: OpenAI")
         print()
         
-        # Create and run LangGraph-powered agent
-        agent = LangGraphHingeAgent(
+        # Create and run Hinge agent
+        agent = HingeAgent(
             max_profiles=config.max_profiles,
             config=config
         )
         
         # Run automation
-        print("🎬 Starting LangGraph-powered automation workflow...")
-        print("🧠 LangGraph + OpenAI will manage state and intelligently route actions...")
+        print("🎬 Starting automation workflow...")
+        print("🧠 OpenAI will manage state and intelligently route actions...")
 
         # Timing start
         app_dir = Path(__file__).parent
@@ -246,7 +246,7 @@ def run_sync():
     try:
         return asyncio.run(main())
     except Exception as e:
-        print(f"Failed to run LangGraph automation: {e}")
+        print(f"Failed to run automation: {e}")
         return 1
 
 
