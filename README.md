@@ -5,7 +5,7 @@ Automates interactions in the Hinge Android app using ADB, computer-vision templ
 Warning
 - This can send automated likes/comments. Review platform terms and use at your own risk.
 - Screenshots may be analyzed by an external provider if enabled. Do not run with private data you’re unwilling to share.
-- Use a test account and enable step-by-step confirmations when not in scrape-only.
+- Use a test account and enable step-by-step confirmations when testing (e.g., with --dry-run).
 
 Requirements
 - Android device with USB debugging enabled and Hinge installed
@@ -53,11 +53,6 @@ Launch options
   uv run python main_agent.py --profiles 1 --dry-run
   ```
 
-- Scrape-only (no likes/dislikes; collect screenshots + extract only):
-  ```
-  cd app
-  uv run python main_agent.py --profiles 1 --scrape-only
-  ```
 
 - Safer + verbose with confirmations:
   ```
@@ -74,7 +69,6 @@ CLI options
 - --like-mode {priority,normal} Prefer the send button variant (default: priority)
 - --ai-routing                 Enable an alternative routing mode (off by default)
 - --dry-run                    Run full logic but skip LIKE/SEND taps
-- --scrape-only                Scrape-only mode; no like/dislike actions
 - --skip-precheck, --no-precheck  Bypass startup like-button pre-check
 
 Behavior and defaults

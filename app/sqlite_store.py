@@ -100,8 +100,14 @@ def init_db(db_path: Optional[str] = None) -> None:
                 relationship_forward REAL,
                 overall_confidence REAL,
                 rationale TEXT,
-                personalisation_hooks TEXT,
-                what_to_avoid TEXT
+                -- Opening messages (JSON blob of 10 generated openers)
+                opening_messages_json TEXT,
+                -- Opening pick (full JSON of selection) and chosen text for analysis
+                opening_pick_json TEXT,
+                opening_pick_text TEXT,
+                -- Verdict (LIKE/DISLIKE) + reason
+                verdict TEXT,
+                decision_reason TEXT
             );
             """
         )
@@ -129,8 +135,11 @@ def init_db(db_path: Optional[str] = None) -> None:
             "ALTER TABLE profiles ADD COLUMN relationship_forward REAL;",
             "ALTER TABLE profiles ADD COLUMN overall_confidence REAL;",
             "ALTER TABLE profiles ADD COLUMN rationale TEXT;",
-            "ALTER TABLE profiles ADD COLUMN personalisation_hooks TEXT;",
-            "ALTER TABLE profiles ADD COLUMN what_to_avoid TEXT;",
+            "ALTER TABLE profiles ADD COLUMN opening_messages_json TEXT;",
+            "ALTER TABLE profiles ADD COLUMN opening_pick_json TEXT;",
+            "ALTER TABLE profiles ADD COLUMN opening_pick_text TEXT;",
+            "ALTER TABLE profiles ADD COLUMN verdict TEXT;",
+            "ALTER TABLE profiles ADD COLUMN decision_reason TEXT;",
         ]:
             try:
                 cur.execute(ddl)
@@ -186,9 +195,7 @@ def update_profile_opener_fields(
         "genuinely_warm": _to_float(style_weights.get("genuinely_warm")),
         "relationship_forward": _to_float(style_weights.get("relationship_forward")),
         "overall_confidence": _to_float(result.get("overall_confidence")),
-        "rationale": result.get("rationale") or "",
-        "personalisation_hooks": json_dumps_safe(result.get("personalisation_hooks")),
-        "what_to_avoid": json_dumps_safe(result.get("what_to_avoid")),
+        "rationale": result.get("rationale") or ""
     }
 
     db_path = db_path or get_db_path()
@@ -207,12 +214,95 @@ def update_profile_opener_fields(
                 genuinely_warm = :genuinely_warm,
                 relationship_forward = :relationship_forward,
                 overall_confidence = :overall_confidence,
-                rationale = :rationale,
-                personalisation_hooks = :personalisation_hooks,
-                what_to_avoid = :what_to_avoid
+                rationale = :rationale
             WHERE id = :id
             """,
             {**vals, "id": int(profile_id)}
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def update_profile_opening_messages_json(
+    profile_id: int,
+    result: Dict[str, Any],
+    db_path: Optional[str] = None
+) -> None:
+    """
+    Persist the opening messages JSON (as text) onto the same profiles row.
+    Stores the entire result dict under opening_messages_json.
+    """
+    try:
+        import json
+        json_text = json.dumps(result or {}, ensure_ascii=False)
+    except Exception:
+        json_text = "{}"
+    db_path = db_path or get_db_path()
+    con = sqlite3.connect(db_path)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "UPDATE profiles SET opening_messages_json = ? WHERE id = ?",
+            (json_text, int(profile_id))
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def update_profile_opening_pick(
+    profile_id: int,
+    result: Dict[str, Any],
+    db_path: Optional[str] = None
+) -> None:
+    """
+    Persist the opening pick:
+    - opening_pick_json: full JSON result blob
+    - opening_pick_text: the chosen_text extracted for easy SQL analysis
+    """
+    try:
+        import json
+        json_text = json.dumps(result or {}, ensure_ascii=False)
+    except Exception:
+        json_text = "{}"
+    chosen_text = ""
+    try:
+        if isinstance(result, dict):
+            ct = result.get("chosen_text")
+            if isinstance(ct, str):
+                chosen_text = ct.strip()
+    except Exception:
+        chosen_text = ""
+    db_path = db_path or get_db_path()
+    con = sqlite3.connect(db_path)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "UPDATE profiles SET opening_pick_json = ?, opening_pick_text = ? WHERE id = ?",
+            (json_text, chosen_text, int(profile_id))
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def update_profile_verdict(
+    profile_id: int,
+    verdict: str,
+    decision_reason: str = "",
+    db_path: Optional[str] = None
+) -> None:
+    """
+    Persist final verdict (LIKE/DISLIKE) and a short decision_reason to the same row.
+    """
+    db_path = db_path or get_db_path()
+    con = sqlite3.connect(db_path)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "UPDATE profiles SET verdict = ?, decision_reason = ? WHERE id = ?",
+            ((verdict or "").strip().upper(), decision_reason or "", int(profile_id))
         )
         con.commit()
     finally:

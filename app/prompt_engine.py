@@ -186,16 +186,19 @@ def build_profile_eval_prompt(home_town: str, job_title: str, university: str) -
 
 # System prompt for choosing opener style; JSON-only response required.
 OPENING_STYLE_SYSTEM_PROMPT = (
-    "You are a dating‑opener strategist. Given a structured profile, choose the best opener style and explain why. "
-    "Ground your reasoning in the provided text and photo descriptions. Be specific, concise, and practical.\n\n"
+    "You are a dating-opener strategist. Given a structured profile, decide what kind of opener would work best "
+    "on this person and explain why. Think like someone who actually uses dating apps and understands attraction, tone, and humour. "
+    "Be direct, perceptive, and conversational rather than cautious or corporate.\n\n"
+    "Photo descriptions may sound factual or neutral. Infer the social tone and vibe behind them — for example, if someone is "
+    "making eye contact, laughing, posing confidently, or dressed for nightlife, that can imply flirty, playful, or bold energy. "
+    "Use normal human language like confident, flirty, cheeky, relaxed, or reserved where appropriate.\n\n"
     "Task\n"
     "Pick the single primary_style from this set:\n"
     "[flirty, complimentary, playful_witty, observational, shared_interest, genuinely_warm, relationship_forward]\n\n"
     "Provide style_weights for all styles (0–1, sum to 1).\n"
     "Give an overall_confidence (0–1).\n"
-    "Provide a short rationale (≤120 words) citing the exact hooks you used (prompts, phrases, or photo details).\n"
-    "Extract personalisation_hooks: 2–3 short bullets (max 12 words each) that an opener can reference.\n"
-    "Provide what_to_avoid: 2 short bullets if relevant (e.g., sensitive topics).\n\n"
+    "Provide a short rationale (≤120 words) describing the personality and tone you infer from the profile and why that opener style fits best. "
+    "Reference concrete cues from prompts, phrasing, or photos.\n\n"
     "Output (JSON only)\n"
     "{\n"
     '  "primary_style": "observational",\n'
@@ -209,19 +212,20 @@ OPENING_STYLE_SYSTEM_PROMPT = (
     '    "relationship_forward": 0.05\n'
     "  },\n"
     '  "overall_confidence": 0.74,\n'
-    '  "rationale": "Grounded, specific explanation referencing profile prompts/photos.",\n'
-    '  "personalisation_hooks": ["example hook 1", "example hook 2", "example hook 3"],\n'
-    '  "what_to_avoid": ["optional note 1", "optional note 2"]\n'
+    '  "rationale": "She gives off confident, cheeky energy through her humour and nightlife photos, so playful_witty leads with some flirty overlap."\n'
     "}\n\n"
     "Scoring guidance (internal)\n"
-    "Increase flirty if there is playful self‑disclosure, confident photos, or romantic cues.\n"
-    "Increase observational when there are vivid visual elements, props, or situational prompts.\n"
-    "Increase playful_witty when humour, irony, or quirky self‑awareness appears.\n"
-    "Increase shared_interest when hobbies, venues, or travel stories are explicit.\n"
-    "Increase relationship_forward when long‑term intent or value alignment is clearly stated.\n"
-    "Lower scores for styles that clash with tone or content.\n"
-    "Keep overall_confidence moderate when signals are mixed or sparse."
+    "• Increase flirty if photos or prompts show confidence, eye contact, nightlife, or teasing humour.\n"
+    "• Increase complimentary if they seem warm, elegant, expressive, or clearly enjoy positive attention.\n"
+    "• Increase playful_witty when there’s irony, self-aware humour, or offbeat storytelling.\n"
+    "• Increase observational when visuals, props, or context (venues, outfits, scenes) reveal personality cues worth riffing on.\n"
+    "• Increase shared_interest when hobbies, travel, or niche passions are central.\n"
+    "• Increase genuinely_warm when tone feels kind, grounded, or low-key.\n"
+    "• Increase relationship_forward when long-term intent or values are clearly stated.\n"
+    "• If the profile’s humour or imagery feels bold, teasing, or sexually confident, bias upward for flirty or playful even if text is restrained.\n"
+    "• Keep overall_confidence moderate when tone signals conflict or ambiguity."
 )
+
 
 
 def _line(label: str, value: str) -> str:
@@ -329,6 +333,144 @@ def build_opening_style_prompts(profile: dict) -> tuple[str, str]:
     Returns (system, user) prompts for the opening‑style request.
     """
     return OPENING_STYLE_SYSTEM_PROMPT, render_opening_style_user_message(profile)
+
+
+# ---------------- Opening messages (British English, JSON-only) ----------------
+OPENING_MESSAGES_SYSTEM_PROMPT = (
+    "You are a dating-app message generator. Write like a confident, witty man in his mid-20s who knows how to flirt "
+    "and hold a woman’s attention. Your goal is to create short, engaging opening messages tailored to the other person’s profile "
+    "and a style analysis. Be charming, observant, and naturally flirty when the profile allows. "
+    "Use British English spelling and punctuation. Avoid anything that sounds formal, corporate, or over-safe."
+    "Encoding: ASCII punctuation only. Do not output Unicode dashes (U+2013 or U+2014). Use a normal hyphen (-), full stop, or comma instead."
+
+)
+
+
+def build_opening_messages_prompts(profile_json: dict, opening_style_json: dict) -> tuple[str, str]:
+    """
+    Build (system, user) prompts for generating 10 opening messages.
+    Automatically includes Daniel's persona for tone grounding and overlap awareness.
+    """
+    import json
+
+    sender_persona = {
+        "name": "Daniel",
+        "vibe": "confident, witty, flirtatious, well-educated",
+        "university": "UCL",
+        "occupation": "Head of AI Security (AI and Cybersecurity)"
+    }
+
+    prof_str = json.dumps(profile_json or {}, ensure_ascii=False, indent=2)
+    style_str = json.dumps(opening_style_json or {}, ensure_ascii=False, indent=2)
+    persona_str = json.dumps(sender_persona, ensure_ascii=False, indent=2)
+
+    user = (
+        f"Sender persona:\n{persona_str}\n\n"
+        f"Profile (scraped):\n{prof_str}\n\n"
+        f"Style analysis:\n{style_str}\n\n"
+        "Task\n\n"
+        "Generate 10 unique opening messages that maximise reply likelihood and fit the personality and tone of this profile. "
+        "Each message must be inspired by one specific photo or prompt, which you must identify for targeting.\n\n"
+        "Tone and intent\n"
+        "• Write like a socially fluent man who’s attractive, confident, and intelligent.\n"
+        "• Be flirty, teasing, or curious when it feels natural; don’t play it safe.\n"
+        "• Use humour and light provocation over politeness.\n"
+        "• Never over-explain what you’re referencing — sound like someone chatting, not demonstrating understanding.\n"
+        "• You may reference overlap between Daniel and the recipient if it feels natural and adds intrigue "
+        "When referring to photos, use natural phrasing like “that rooftop” or “that outfit”, never “in the red-lit photo” or “in photo 2”."
+        "Avoid cliche phrases or facts. Be original and obscure."
+        "(for example, same university or similar field). Never list credentials or facts — it should sound like spontaneous chemistry, not a CV.\n\n"
+        "Structure\n"
+        "• Exactly 10 messages:\n"
+        "  – 3 written in the primary style.\n"
+        "  – 2 written in the second-highest weighted style.\n"
+        "  – 5 synthesised, blending tone and intent across all style weights.\n\n"
+        "• Length: 1–2 sentences per message. No em dashes.\n"
+        "• Keep language modern and natural; mid-20s tone, not overly slangy or American.\n"
+        "• A/B or short question formats are fine if they flow naturally.\n"
+        "• You can use well-known London area names if they make sense for a date or activity suggestion, "
+        "but never mention where she lives, studies, or works.\n"
+        "• Grounding should be implicit — the line can be inspired by a photo or prompt but doesn’t need to describe it.\n"
+        "• No mechanical prompt+photo mashups.\n"
+        "• Every opener must feel distinct in tone and intent.\n\n"
+        "Output (JSON only)\n"
+        "{\n"
+        '  "openers": [\n'
+        "    {\n"
+        '      "text": "Opening line here.",\n'
+        '      "intended_style": "playful_witty",\n'
+        '      "target_type": "photo",\n'
+        '      "target_index": 2,\n'
+        '      "target_summary": "rooftop skyline at night",\n'
+        '      "hook_basis": "nightlife vibe and smile",\n'
+        '      "reply_affordance": 0.86\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "Field notes\n"
+        "text – the message to send.\n"
+        "intended_style – one of [flirty, complimentary, playful_witty, observational, shared_interest, genuinely_warm, relationship_forward].\n"
+        "target_* – identifies the element it’s responding to (for programmatic liking).\n"
+        "hook_basis – short note of what inspired it (not shown to user).\n"
+        "reply_affordance – 0–1 model estimate of how easy it is to reply.\n"
+    )
+    return OPENING_MESSAGES_SYSTEM_PROMPT, user
+
+
+
+# ---------------- Opening pick (choose best opener; British English, JSON-only) ----------------
+OPENING_PICK_SYSTEM_PROMPT = (
+    "You are a dating-app strategist. Choose the single best opening line from a generated list. "
+    "Judge like someone who understands attraction, wit, and conversational chemistry — not a marketer. "
+    "Favour confidence, intrigue, and personality over politeness or caution. "
+    "Use British English spelling and punctuation."
+)
+
+
+def build_opening_pick_prompts(profile_json: dict, opening_style_json: dict, generated_openers_json: dict) -> tuple[str, str]:
+    """
+    Build (system, user) prompts for selecting the single best opening line.
+    """
+    import json
+    prof_str = json.dumps(profile_json or {}, ensure_ascii=False, indent=2)
+    style_str = json.dumps(opening_style_json or {}, ensure_ascii=False, indent=2)
+    gens_str = json.dumps(generated_openers_json or {}, ensure_ascii=False, indent=2)
+
+    user = (
+        "Profile (scraped):\n\n"
+        f"{prof_str}\n\n\n"
+        "Style analysis:\n\n"
+        f"{style_str}\n\n\n"
+        "Candidate openers (from previous step):\n\n"
+        f"{gens_str}\n\n"
+        "Task\n\n"
+        "Select one opening line that is most likely to:\n"
+        "• Catch her attention immediately among many messages.\n"
+        "• Create intrigue or attraction — it should feel confident and engaging.\n"
+        "• Be effortless to reply to (simple, fun, or flirty).\n"
+        "• Match her tone and personality based on the style analysis.\n"
+        "• Sound like it came from a socially fluent, intelligent man — not a bot, not a try-hard.\n\n"
+        "Constraints\n\n"
+        "• You must choose exactly one of the ten.\n"
+        "• Keep justification short (1–2 sentences) and concrete.\n"
+        "• Weigh style alignment, intrigue, and ease of reply equally — don’t just pick the safest one.\n"
+        "• Ground reasoning in actual wording, tone, and her profile cues.\n"
+        "• Use British English.\n\n"
+        "Output JSON only.\n\n"
+        "Output format\n"
+        "{\n"
+        '  "chosen_text": "Final selected opening line here.",\n'
+        '  "chosen_index": 7,\n'
+        '  "intended_style": "playful_witty",\n'
+        '  "target_type": "photo",\n'
+        '  "target_index": 3,\n'
+        '  "target_summary": "Photo laughing in a red floral dress at a wine bar",\n'
+        '  "justification": "It’s confident, playful, and easy to answer — it fits her humour and feels natural, not rehearsed.",\n'
+        '  "confidence": 0.84\n'
+        "}\n"
+    )
+    return OPENING_PICK_SYSTEM_PROMPT, user
+
 
 
 if __name__ == "__main__":
