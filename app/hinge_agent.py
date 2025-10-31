@@ -199,6 +199,57 @@ class HingeAgent:
         """Always print errors."""
         print(message)
 
+    def _print_score_report(self, score_result: Dict[str, Any]) -> None:
+        """Pretty print final score and contributors; robust to missing fields."""
+        try:
+            decision = str(score_result.get("decision", "")).upper()
+            emoji = "💖" if decision == "LIKE" else "👎"
+            score = score_result.get("score", 0)
+            nukes = score_result.get("nukes_triggered") or []
+            contribs = score_result.get("top_contributors") or score_result.get("contributors") or []
+
+            print("──────────────── Score Report ────────────────")
+            print(f"Verdict: {emoji} {decision}")
+            try:
+                print(f"Final score: {int(score)}")
+            except Exception:
+                print(f"Final score: {score}")
+
+            print("Contributors:")
+            # If nukes exist, summarize first
+            if nukes:
+                try:
+                    print("• Nukes: " + ", ".join(map(str, nukes)))
+                except Exception:
+                    print("• Nukes: (unavailable)")
+
+            # List up to 8 contributors
+            try:
+                listed = 0
+                if isinstance(contribs, list):
+                    for c in contribs:
+                        if listed >= 8:
+                            break
+                        if isinstance(c, dict):
+                            f = str(c.get("field", "")).strip()
+                            v = str(c.get("value", "")).strip()
+                            try:
+                                d = int(c.get("delta", 0))
+                            except Exception:
+                                d = 0
+                            sign = "+" if d > 0 else ""
+                            print(f"• {f}: {v} ({sign}{d})")
+                            listed += 1
+                if listed == 0 and not nukes:
+                    print("• (none)")
+            except Exception:
+                pass
+
+            print("──────────────────────────────────────────────")
+        except Exception as _e:
+            # Never break the flow on rendering issues
+            print(f"[score-report] rendering failed: {_e}")
+
     def _confirm_step(self, step_name: str, state: HingeAgentState) -> bool:
         """Prompt for user confirmation to proceed with a step. Default is No."""
         prompt = f"Confirm to proceed with step '{step_name}' [y/N]: "
@@ -218,7 +269,7 @@ class HingeAgent:
             self.ai_trace_file = os.path.join(self.config.ai_trace_log_dir, f"ai_trace_{ts}.log")
             # Propagate to analyzer layer
             os.environ["HINGE_AI_TRACE_FILE"] = os.path.abspath(self.ai_trace_file)
-            os.environ["HINGE_AI_TRACE_CONSOLE"] = "1" if getattr(self.config, "manual_confirm", False) else "0"
+            os.environ["HINGE_AI_TRACE_CONSOLE"] = "1" if getattr(self.config, "verbose_logging", False) else "0"
             # Header
             with open(self.ai_trace_file, "a", encoding="utf-8") as f:
                 f.write(f"AI trace started {datetime.now().isoformat()} ai_trace={self.config.ai_trace}\n")
@@ -237,7 +288,7 @@ class HingeAgent:
                 f.write("\n".join(out_lines) + "\n")
         except Exception as e:
             print(f"[ai-trace] Failed to write AI trace: {e}")
-        if getattr(self.config, "manual_confirm", False):
+        if getattr(self.config, "verbose_logging", False):
             for l in out_lines:
                 print(l)
 
@@ -1006,14 +1057,14 @@ class HingeAgent:
                 try:
                     if getattr(self.config, "use_cv_ocr_biometrics", True) and isinstance(cv_result, dict):
                         try:
-                            print("[CV_OCR] Merged CV biometrics into extracted_profile (CV takes precedence).")
+                            self._debug("[CV_OCR] Merged CV biometrics into extracted_profile (CV takes precedence).")
                         except Exception:
                             pass
                 except Exception as _me:
                     print(f"⚠️ Merge biometrics failed: {_me}")
                 try:
-                    print("[AI JSON extracted_profile]")
-                    print(json.dumps(extracted_profile, indent=2)[:2000])
+                    self._debug("[AI JSON extracted_profile]")
+                    self._debug(json.dumps(extracted_profile, indent=2)[:2000])
                 except Exception:
                     pass
             except Exception as _e:
@@ -1797,6 +1848,11 @@ class HingeAgent:
             reason = ""
         
         print(f"🎯 DECISION: {'💖 LIKE' if should_like else '👎 DISLIKE'} - {reason}")
+        # Console score report (final score + contributors)
+        try:
+            self._print_score_report(score_result)
+        except Exception:
+            pass
         analysis = state.get("profile_analysis", {})
         return {
             **state,

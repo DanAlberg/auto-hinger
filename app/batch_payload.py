@@ -176,15 +176,12 @@ _PROFILE_FIELDS = [
     "Photo4_desc",
     "Photo5_desc",
     "Photo6_desc",
-    # Opener style fields (for building opening_messages prompt)
-    "primary_style",
+    # Opener style fields (for building opening_messages prompt; new 5-style schema)
+    "playful",
     "flirty",
-    "complimentary",
-    "playful_witty",
-    "observational",
-    "shared_interest",
-    "genuinely_warm",
-    "relationship_forward",
+    "warm",
+    "relatable",
+    "direct",
     "overall_confidence",
     "rationale",
     # Opening messages storage (JSON blob)
@@ -392,7 +389,7 @@ def _build_profile_json_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _build_opening_style_json_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Construct opening_style JSON from saved columns for use in the opening-messages prompt."""
+    """Construct opening_style JSON from saved columns for use in the opening-messages prompt (new 5-style schema)."""
     import json
     def _float(x):
         try:
@@ -401,15 +398,12 @@ def _build_opening_style_json_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
             return 0.0
 
     style = {
-        "primary_style": (row.get("primary_style") or "").strip(),
         "style_weights": {
+            "playful": _float(row.get("playful")),
             "flirty": _float(row.get("flirty")),
-            "complimentary": _float(row.get("complimentary")),
-            "playful_witty": _float(row.get("playful_witty")),
-            "observational": _float(row.get("observational")),
-            "shared_interest": _float(row.get("shared_interest")),
-            "genuinely_warm": _float(row.get("genuinely_warm")),
-            "relationship_forward": _float(row.get("relationship_forward")),
+            "warm": _float(row.get("warm")),
+            "relatable": _float(row.get("relatable")),
+            "direct": _float(row.get("direct")),
         },
         "overall_confidence": _float(row.get("overall_confidence")),
         "rationale": row.get("rationale") or ""
@@ -417,7 +411,7 @@ def _build_opening_style_json_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return style
 
 
-def run_opening_messages(profile_id: Optional[int] = None, db_path: Optional[str] = None, model: str = "gpt-5-mini") -> Dict[str, Any]:
+def run_opening_messages(profile_id: Optional[int] = None, db_path: Optional[str] = None, model: str = "gpt-5") -> Dict[str, Any]:
     """
     Execute the opening-messages LLM request for a given profile id (or latest if None).
     Uses scraped profile JSON + opening-style JSON; persists full JSON to opening_messages_json.
