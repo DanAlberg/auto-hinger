@@ -62,7 +62,8 @@ def _chat_text(prompt: str, temperature: float = 0.2, model: str = "gpt-5-mini")
     )
     dt_ms = int((time.perf_counter() - t0) * 1000)
     try:
-        print(f"[AI] chat_text model={model} duration={dt_ms}ms")
+        if os.getenv("HINGE_VERBOSE_LOGGING") == "1":
+            print(f"[AI] chat_text model={model} duration={dt_ms}ms")
     except Exception:
         pass
     content = resp.choices[0].message.content or ""
@@ -114,7 +115,8 @@ def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float
     )
     dt_ms = int((time.perf_counter() - t0) * 1000)
     try:
-        print(f"[AI] chat_json model={model} duration={dt_ms}ms")
+        if os.getenv("HINGE_VERBOSE_LOGGING") == "1":
+            print(f"[AI] chat_json model={model} duration={dt_ms}ms")
     except Exception:
         pass
 
@@ -144,8 +146,9 @@ def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float
         pass
     # Pretty-print the JSON to console for quick review (truncated)
     try:
-        print("[AI JSON chat_json]")
-        print(json.dumps(parsed, indent=2)[:2000])
+        if os.getenv("HINGE_VERBOSE_LOGGING") == "1":
+            print("[AI JSON chat_json]")
+            print(json.dumps(parsed, indent=2)[:2000])
     except Exception:
         pass
     return parsed
@@ -173,7 +176,8 @@ def chat_json_system_user(system_prompt: str, user_prompt: str, model: str = "gp
     dt_ms = int((perf_counter() - t0) * 1000)
     _ai_trace_log([f"AI_TIME call_id=chat_json_system_user model={model} duration_ms={dt_ms}"])
     try:
-        print(f"[AI] chat_json_system_user model={model} duration={dt_ms}ms")
+        if os.getenv("HINGE_VERBOSE_LOGGING") == "1":
+            print(f"[AI] chat_json_system_user model={model} duration={dt_ms}ms")
     except Exception:
         pass
 
@@ -201,8 +205,9 @@ def chat_json_system_user(system_prompt: str, user_prompt: str, model: str = "gp
         pass
     # Pretty-print the JSON to console for quick review (truncated)
     try:
-        print("[AI JSON chat_json_system_user]")
-        print(json.dumps(parsed, indent=2)[:2000])
+        if os.getenv("HINGE_VERBOSE_LOGGING") == "1":
+            print("[AI JSON chat_json_system_user]")
+            print(json.dumps(parsed, indent=2)[:2000])
     except Exception:
         pass
     return parsed
@@ -249,7 +254,8 @@ def extract_text_from_image(image_path: str) -> str:
     )
     dt_ms = int((time.perf_counter() - t0) * 1000)
     try:
-        print(f"[AI] extract_text_from_image model=gpt-5-mini duration={dt_ms}ms")
+        if os.getenv("HINGE_VERBOSE_LOGGING") == "1":
+            print(f"[AI] extract_text_from_image model=gpt-5-mini duration={dt_ms}ms")
     except Exception:
         pass
     text_out = (resp.choices[0].message.content or "").strip()

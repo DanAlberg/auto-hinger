@@ -186,44 +186,41 @@ def build_profile_eval_prompt(home_town: str, job_title: str, university: str) -
 
 # System prompt for choosing opener style; JSON-only response required.
 OPENING_STYLE_SYSTEM_PROMPT = (
-    "You are a dating-opener strategist. Given a structured profile, decide what kind of opener would work best "
-    "on this person and explain why. Think like someone who actually uses dating apps and understands attraction, tone, and humour. "
-    "Be direct, perceptive, and conversational rather than cautious or corporate.\n\n"
-    "Photo descriptions may sound factual or neutral. Infer the social tone and vibe behind them — for example, if someone is "
-    "making eye contact, laughing, posing confidently, or dressed for nightlife, that can imply flirty, playful, or bold energy. "
-    "Use normal human language like confident, flirty, cheeky, relaxed, or reserved where appropriate.\n\n"
-    "Task\n"
-    "Pick the single primary_style from this set:\n"
-    "[flirty, complimentary, playful_witty, observational, shared_interest, genuinely_warm, relationship_forward]\n\n"
-    "Provide style_weights for all styles (0–1, sum to 1).\n"
-    "Give an overall_confidence (0–1).\n"
-    "Provide a short rationale (≤120 words) describing the personality and tone you infer from the profile and why that opener style fits best. "
-    "Reference concrete cues from prompts, phrasing, or photos.\n\n"
-    "Output (JSON only)\n"
+    "You are a dating-app strategist. Given a structured profile, decide what kind of opener tone would work best.\n"
+    "Think like someone who actually uses dating apps and understands attraction, tone, and humour.\n"
+    "Be perceptive and conversational, not cautious or corporate.\n\n"
+    "Photo descriptions will sound neutral — infer the underlying social tone:\n"
+    "confidence, playfulness, flirtation, or warmth from body language, setting, and energy.\n\n"
+    "---\n\n"
+    "Task:\n"
+    "Provide `style_weights` for all five (0–1, sum to 1):\n"
+    "[playful, flirty, warm, relatable, direct]\n\n"
+    "Include:\n"
+    "• `overall_confidence` (0–1)  \n"
+    "• `rationale` (≤100 words) explaining what the profile signals and why those weights fit best.\n"
+    "Reference clear cues from prompts, phrasing, or photos.\n\n"
+    "---\n\n"
+    "Output (JSON only):\n\n"
     "{\n"
-    '  "primary_style": "observational",\n'
     '  "style_weights": {\n'
-    '    "flirty": 0.25,\n'
-    '    "complimentary": 0.10,\n'
-    '    "playful_witty": 0.20,\n'
-    '    "observational": 0.25,\n'
-    '    "shared_interest": 0.10,\n'
-    '    "genuinely_warm": 0.05,\n'
-    '    "relationship_forward": 0.05\n'
+    '    "playful": 0.22,\n'
+    '    "flirty": 0.28,\n'
+    '    "warm": 0.18,\n'
+    '    "relatable": 0.22,\n'
+    '    "direct": 0.10\n'
     "  },\n"
-    '  "overall_confidence": 0.74,\n'
-    '  "rationale": "She gives off confident, cheeky energy through her humour and nightlife photos, so playful_witty leads with some flirty overlap."\n'
+    '  "overall_confidence": 0.76,\n'
+    '  "rationale": "She mixes humour and everyday detail — confident but grounded — so a relatable, lightly flirty balance fits."\n'
     "}\n\n"
-    "Scoring guidance (internal)\n"
-    "• Increase flirty if photos or prompts show confidence, eye contact, nightlife, or teasing humour.\n"
-    "• Increase complimentary if they seem warm, elegant, expressive, or clearly enjoy positive attention.\n"
-    "• Increase playful_witty when there’s irony, self-aware humour, or offbeat storytelling.\n"
-    "• Increase observational when visuals, props, or context (venues, outfits, scenes) reveal personality cues worth riffing on.\n"
-    "• Increase shared_interest when hobbies, travel, or niche passions are central.\n"
-    "• Increase genuinely_warm when tone feels kind, grounded, or low-key.\n"
-    "• Increase relationship_forward when long-term intent or values are clearly stated.\n"
-    "• If the profile’s humour or imagery feels bold, teasing, or sexually confident, bias upward for flirty or playful even if text is restrained.\n"
-    "• Keep overall_confidence moderate when tone signals conflict or ambiguity."
+    "---\n\n"
+    "Scoring guidance (internal):\n"
+    "• Flirty → confidence, nightlife, teasing humour, bold energy.  \n"
+    "• Playful → irony, dry wit, or self-aware humour.  \n"
+    "• Warm → kind, grounded, emotionally open tone.  \n"
+    "• Relatable → daily life, food, or shared frustrations.  \n"
+    "• Direct → decisive tone or clear meeting intent.  \n"
+    "• Bias flirty upward when humour or imagery feels sexually confident.  \n"
+    "• Keep confidence moderate when cues conflict."
 )
 
 
@@ -341,8 +338,6 @@ OPENING_MESSAGES_SYSTEM_PROMPT = (
     "and hold a woman’s attention. Your goal is to create short, engaging opening messages tailored to the other person’s profile "
     "and a style analysis. Be charming, observant, and naturally flirty when the profile allows. "
     "Use British English spelling and punctuation. Avoid anything that sounds formal, corporate, or over-safe."
-    "Encoding: ASCII punctuation only. Do not output Unicode dashes (U+2013 or U+2014). Use a normal hyphen (-), full stop, or comma instead."
-
 )
 
 
@@ -375,29 +370,34 @@ def build_opening_messages_prompts(profile_json: dict, opening_style_json: dict)
         "• Write like a socially fluent man who’s attractive, confident, and intelligent.\n"
         "• Be flirty, teasing, or curious when it feels natural; don’t play it safe.\n"
         "• Use humour and light provocation over politeness.\n"
-        "• Never over-explain what you’re referencing — sound like someone chatting, not demonstrating understanding.\n"
-        "• You may reference overlap between Daniel and the recipient if it feels natural and adds intrigue "
-        "When referring to photos, use natural phrasing like “that rooftop” or “that outfit”, never “in the red-lit photo” or “in photo 2”."
-        "Avoid cliche phrases or facts. Be original and obscure."
-        " Never list credentials or facts — it should sound like spontaneous chemistry, not a CV (for example, same university or similar field is ok).\n\n"
+        "• Never over-explain what you’re referencing - sound like someone chatting, not demonstrating understanding.\n"
+        "• You may reference overlap between Daniel and the recipient if it feels natural and adds intrigue. "
+        "When referring to photos, use natural phrasing like “that rooftop” or “that outfit”, never “in the red-lit photo” or “in photo 2”. "
+        "Avoid cliché phrases or facts. Be original and specific. "
+        "Never list credentials or facts - it should sound like spontaneous chemistry, not a CV.\n\n"
+        "Style categories\n"
+        "Playful – confident, teasing, funny; the baseline 'fun to talk to' tone.\n"
+        "Flirty – direct interest, light sexual tension or innuendo; semi but tastefully explicit (may swear or refer to sex directly).\n"
+        "Warm – friendly, emotionally open; feels human and kind without being sappy.\n"
+        "Relatable – grounded in shared experience ('yeah, that’s so London').\n"
+        "Direct – clear interest or intent to meet; forward but relaxed.\n\n"
         "Structure\n"
         "• Exactly 10 messages:\n"
-        "  – 3 written in the primary style.\n"
-        "  – 2 written in the second-highest weighted style.\n"
-        "  – 5 synthesised, blending tone and intent across all style weights.\n\n"
-        "• Length: 1–2 sentences per message. No em dashes.\n"
-        "• Keep language modern and natural; mid-20s tone, not overly slangy or American.\n"
-        "• A/B or short question formats are fine if they flow naturally.\n"
+        "  – 5 written in the highest-rated style.\n"
+        "  – 3 written in the second-highest-rated style.\n"
+        "  – 2 written in the third-highest-rated style.\n\n"
+        "• Length: 1-2 sentences per message.\n"
+        "• Keep language modern and natural; mid-20s tone, not overly slangy or American. A/B or short-question formats are fine if they flow naturally.\n"
         "• You can use well-known London area names if they make sense for a date or activity suggestion, but never mention where she lives, studies, or works.\n"
-        "• Grounding should be implicit - the line can be inspired by a photo or prompt but doesn’t need to describe it.\n"
-        "• No mechanical prompt+photo mashups. Unless there's strong correlation, referring to both a prompt and a photo often feels AI-y and unnatural\n"
-        "• Every opener must feel distinct in tone and intent.\n\n"
+        "• Every opener must feel distinct in tone and intent.\n"
+        "• One-to-one grounding: each opener must anchor to exactly one photo OR exactly one prompt. Do not combine or overlap elements from multiple photos/prompts. "
+        "You may factor in profile context for consistency (e.g., avoid alcohol if she doesn’t drink).\n\n"
         "Output (JSON only)\n"
         "{\n"
         '  "openers": [\n'
         "    {\n"
         '      "text": "Opening line here.",\n'
-        '      "intended_style": "playful_witty",\n'
+        '      "intended_style": "playful",\n'
         '      "target_type": "photo",\n'
         '      "target_index": 2,\n'
         '      "target_summary": "rooftop skyline at night",\n'
@@ -408,10 +408,30 @@ def build_opening_messages_prompts(profile_json: dict, opening_style_json: dict)
         "}\n\n"
         "Field notes\n"
         "text – the message to send.\n"
-        "intended_style – one of [flirty, complimentary, playful_witty, observational, shared_interest, genuinely_warm, relationship_forward].\n"
+        "intended_style – one of [playful, flirty, warm, relatable, direct].\n"
         "target_* – identifies the element it’s responding to (for programmatic liking).\n"
         "hook_basis – short note of what inspired it (not shown to user).\n"
-        "reply_affordance – 0–1 model estimate of how easy it is to reply.\n"
+        "reply_affordance – 0–1 model estimate of how easy it is to reply.\n\n"
+        "Multi-shot examples for grounding:\n"
+        "[\n"
+        "  {\"source\": \"Photo – pub garden table with two pints on it, warm afternoon light, background chatter and string lights, empty seat opposite her.\", \"style\": \"direct\", \"message\": \"That table’s missing one person. Fix it?\"},\n"
+        "  {\"source\": \"Prompt – 'The most London thing I’ve done' → 'Carried a chair home on the tube.'\", \"style\": \"playful\", \"message\": \"That’s how you know you’ve truly assimilated.\"},\n"
+        "  {\"source\": \"Prompt – 'Typical weekend' → 'Gym, brunch, losing hours scrolling rentals I can’t afford.'\", \"style\": \"playful\", \"message\": \"Classic. Found your dream flat yet or still just punishing yourself?\"},\n"
+        "  {\"source\": \"Photo – park bench shot, autumn leaves on the ground, takeaway coffee in her hand, soft morning light, she’s half-smiling while looking away from the camera.\", \"style\": \"flirty\", \"message\": \"That picture could easily be an advert for some dating app.\"},\n"
+        "  {\"source\": \"Photo – dinner table at a busy restaurant, friends mid-laugh, she’s leaning on one hand with a half-smirk straight at the camera.\", \"style\": \"flirty\", \"message\": \"You look like you’d flirt just to win an argument.\"},\n"
+        "  {\"source\": \"Photo – candid kitchen shot, she’s laughing mid-conversation, chopping vegetables, sleeves rolled up, cluttered counter with plants and wine glasses.\", \"style\": \"warm\", \"message\": \"That’s the kind of kitchen I’d actually want to hang out in.\"},\n"
+        "  {\"source\": \"Photo – living room photo, she’s sitting cross-legged on a sofa with a cat curled up next to her, laptop open, soft evening light from a lamp.\", \"style\": \"warm\", \"message\": \"Alright, that cat looks like it runs the place.\"},\n"
+        "  {\"source\": \"Prompt – 'The last time I cried laughing' → 'When my flatmate tried to cook pasta in a kettle.'\", \"style\": \"playful\", \"message\": \"I’ll buy you a drink if I get to hear the rest of that story.\"},\n"
+        "  {\"source\": \"Prompt – 'Typical weekend' → 'Gym, brunch, losing hours scrolling rentals I can’t afford.'\", \"style\": \"relatable\", \"message\": \"You had me till the rental bit. That’s trauma.\"},\n"
+        "  {\"source\": \"Photo – street market shot, she’s holding a paper bag of pastries, sun hitting her face, people blurred in the background, colourful stalls behind her.\", \"style\": \"relatable\", \"message\": \"Those pastries look amazing. Where was this?\"},\n"
+        "  {\"source\": \"Photo – outdoor nature backdrop, trees and soft sunlight behind her, light jacket, relaxed half-smile, hair slightly windblown.\", \"style\": \"warm\", \"message\": \"Absolutely gorgeous — where was this?\"},\n"
+        "  {\"source\": \"Photo – evening rooftop bar setting overlooking a city skyline with tall illuminated buildings in the background. The woman is standing near the railing, holding a drink in her right hand, wearing a fitted dark top and light jacket. Her hair is loose and slightly windswept from the breeze. The background includes blurred city lights and a faint sunset glow.\", \"style\": \"flirty\", \"message\": \"That view is amazing, although with you next to me I'm not sure I'd be looking at the skyline.\"},\n"
+        "  {\"source\": \"Prompt – 'The best way to ask me out is by: Carrier pigeon'\", \"style\": \"playful\", \"message\": \"Smoke signals work better. Shall we test reception?\"},\n"
+        "  {\"source\": \"Prompt – 'I bet you can’t teach me to play chess (successfully)'\", \"style\": \"flirty\", \"message\": \"You want to get mated? Bit forward, no?\"},\n"
+        "  {\"source\": \"Prompt – 'Most spontaneous thing I’ve done: Moved to Australia for five years'\", \"style\": \"direct\", \"message\": \"What’s the most spontaneous thing that happened IN Australia?\"},\n"
+        "  {\"source\": \"Prompt – 'Together, we could watch true crime'\", \"style\": \"playful\", \"message\": \"We could also do true crime. It’s better to live it than watch it.\"},\n"
+        "  {\"source\": \"Prompt – 'A dream home must include: an obedient man'\", \"style\": \"playful\", \"message\": \"Meeeee.\"}\n"
+        "]"
     )
     return OPENING_MESSAGES_SYSTEM_PROMPT, user
 
@@ -421,8 +441,8 @@ def build_opening_messages_prompts(profile_json: dict, opening_style_json: dict)
 OPENING_PICK_SYSTEM_PROMPT = (
     "You are a dating-app strategist. Choose the single best opening line from a generated list. "
     "Judge like someone who understands attraction, wit, and conversational chemistry — not a marketer. "
-    "Favour confidence, intrigue, and personality over politeness or caution. "
-    "Use British English spelling and punctuation."
+    "Prefer confidence, intrigue, and personality over politeness or caution. Use British English. "
+    "You must choose strictly from the 10 provided candidate openers."
 )
 
 
@@ -438,21 +458,15 @@ def build_opening_pick_prompts(profile_json: dict, opening_style_json: dict, gen
     user = (
         "Profile (scraped):\n\n"
         f"{prof_str}\n\n\n"
-        "Style analysis:\n\n"
-        f"{style_str}\n\n\n"
         "Candidate openers (from previous step):\n\n"
         f"{gens_str}\n\n"
         "Task\n\n"
-        "Select one opening line that is most likely to:\n"
-        "• Catch her attention immediately among many messages.\n"
-        "• Create intrigue or attraction — it should feel confident and engaging.\n"
-        "• Be effortless to reply to (simple, fun, or flirty).\n"
-        "• Match her tone and personality based on the style analysis.\n"
-        "• Sound like it came from a socially fluent, intelligent man — not a bot, not a try-hard.\n\n"
+        "Select exactly one opening line from the 10 candidate openers that is most likely to get a reply. "
+        "Prefer confidence, intrigue, and ease of reply. The chosen line must feel naturally grounded to a single prompt or photo. "
+        "Do not write new lines; only choose from the provided 10.\n\n"
         "Constraints\n\n"
-        "• You must choose exactly one of the ten.\n"
+        "• Choose exactly one of the ten (not from the examples below).\n"
         "• Keep justification short (1–2 sentences) and concrete.\n"
-        "• Weigh style alignment, intrigue, and ease of reply equally — don’t just pick the safest one.\n"
         "• Ground reasoning in actual wording, tone, and her profile cues.\n"
         "• Use British English.\n\n"
         "Output JSON only.\n\n"
@@ -460,13 +474,33 @@ def build_opening_pick_prompts(profile_json: dict, opening_style_json: dict, gen
         "{\n"
         '  "chosen_text": "Final selected opening line here.",\n'
         '  "chosen_index": 7,\n'
-        '  "intended_style": "playful_witty",\n'
+        '  "intended_style": "playful",\n'
         '  "target_type": "photo",\n'
         '  "target_index": 3,\n'
         '  "target_summary": "Photo laughing in a red floral dress at a wine bar",\n'
         '  "justification": "It’s confident, playful, and easy to answer — it fits her humour and feels natural, not rehearsed.",\n'
         '  "confidence": 0.84\n'
-        "}\n"
+        "}\n\n"
+        "Examples of good prompts/messages for calibration/grounding (for judging tone only; not candidates; do not copy verbatim):\n"
+        "[\n"
+        "  {\"source\": \"Photo – pub garden table with two pints on it, warm afternoon light, background chatter and string lights, empty seat opposite her.\", \"style\": \"direct\", \"message\": \"That table’s missing one person. Fix it?\"},\n"
+        "  {\"source\": \"Prompt – 'The most London thing I’ve done' → 'Carried a chair home on the tube.'\", \"style\": \"playful\", \"message\": \"That’s how you know you’ve truly assimilated.\"},\n"
+        "  {\"source\": \"Prompt – 'Typical weekend' → 'Gym, brunch, losing hours scrolling rentals I can’t afford.'\", \"style\": \"playful\", \"message\": \"Classic. Found your dream flat yet or still just punishing yourself?\"},\n"
+        "  {\"source\": \"Photo – park bench shot, autumn leaves on the ground, takeaway coffee in her hand, soft morning light, she’s half-smiling while looking away from the camera.\", \"style\": \"flirty\", \"message\": \"That picture could easily be an advert for some dating app.\"},\n"
+        "  {\"source\": \"Photo – dinner table at a busy restaurant, friends mid-laugh, she’s leaning on one hand with a half-smirk straight at the camera.\", \"style\": \"flirty\", \"message\": \"You look like you’d flirt just to win an argument.\"},\n"
+        "  {\"source\": \"Photo – candid kitchen shot, she’s laughing mid-conversation, chopping vegetables, sleeves rolled up, cluttered counter with plants and wine glasses.\", \"style\": \"warm\", \"message\": \"That’s the kind of kitchen I’d actually want to hang out in.\"},\n"
+        "  {\"source\": \"Photo – living room photo, she’s sitting cross-legged on a sofa with a cat curled up next to her, laptop open, soft evening light from a lamp.\", \"style\": \"warm\", \"message\": \"Alright, that cat looks like it runs the place.\"},\n"
+        "  {\"source\": \"Prompt – 'The last time I cried laughing' → 'When my flatmate tried to cook pasta in a kettle.'\", \"style\": \"playful\", \"message\": \"I’ll buy you a drink if I get to hear the rest of that story.\"},\n"
+        "  {\"source\": \"Prompt – 'Typical weekend' → 'Gym, brunch, losing hours scrolling rentals I can’t afford.'\", \"style\": \"relatable\", \"message\": \"You had me till the rental bit. That’s trauma.\"},\n"
+        "  {\"source\": \"Photo – street market shot, she’s holding a paper bag of pastries, sun hitting her face, people blurred in the background, colourful stalls behind her.\", \"style\": \"relatable\", \"message\": \"Those pastries look amazing. Where was this?\"},\n"
+        "  {\"source\": \"Photo – outdoor nature backdrop, trees and soft sunlight behind her, light jacket, relaxed half-smile, hair slightly windblown.\", \"style\": \"warm\", \"message\": \"Absolutely gorgeous — where was this?\"},\n"
+        "  {\"source\": \"Photo – evening rooftop bar setting overlooking a city skyline with tall illuminated buildings in the background. The woman is standing near the railing, holding a drink in her right hand, wearing a fitted dark top and light jacket. Her hair is loose and slightly windswept from the breeze. The background includes blurred city lights and a faint sunset glow.\", \"style\": \"flirty\", \"message\": \"That view is amazing, although with you next to me I'm not sure I'd be looking at the skyline.\"},\n"
+        "  {\"source\": \"Prompt – 'The best way to ask me out is by: Carrier pigeon'\", \"style\": \"playful\", \"message\": \"Smoke signals work better. Shall we test reception?\"},\n"
+        "  {\"source\": \"Prompt – 'I bet you can’t teach me to play chess (successfully)'\", \"style\": \"flirty\", \"message\": \"You want to get mated? Bit forward, no?\"},\n"
+        "  {\"source\": \"Prompt – 'Most spontaneous thing I’ve done: Moved to Australia for five years'\", \"style\": \"direct\", \"message\": \"What’s the most spontaneous thing that happened IN Australia?\"},\n"
+        "  {\"source\": \"Prompt – 'Together, we could watch true crime'\", \"style\": \"playful\", \"message\": \"We could also do true crime. It’s better to live it than watch it.\"},\n"
+        "  {\"source\": \"Prompt – 'A dream home must include: an obedient man'\", \"style\": \"playful\", \"message\": \"Meeeee.\"}\n"
+        "]"
     )
     return OPENING_PICK_SYSTEM_PROMPT, user
 

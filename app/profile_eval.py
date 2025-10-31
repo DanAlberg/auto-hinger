@@ -125,16 +125,7 @@ def _score_profile(extracted: Dict[str, Any], enrichment: Dict[str, Any]) -> Dic
       }
     """
     nukes = _check_nukes(extracted)
-    if nukes:
-        result = {
-            "decision": "DISLIKE",
-            "score": NUKE_SCORE,
-            "nukes_triggered": nukes,
-            "top_contributors": []
-        }
-        print("[SCORER] ", result)
-        return result
-
+    # Treat nukes as additive penalties; compute base contributors first, then apply nukes.
     score = 0
     contribs: List[Tuple[str, str, int]] = []
 
@@ -255,6 +246,12 @@ def _score_profile(extracted: Dict[str, Any], enrichment: Dict[str, Any]) -> Dic
         score -= 2
         _add(contribs, "Ethnicity", ethnicity, -2)
 
+    # Apply nukes as additive -99 penalties and record as contributors
+    if nukes:
+        for n in nukes:
+            score += NUKE_SCORE
+            _add(contribs, "Nuke", n, NUKE_SCORE)
+
     # Decision
     decision = "LIKE" if score >= LIKE_THRESHOLD else "DISLIKE"
 
@@ -266,11 +263,12 @@ def _score_profile(extracted: Dict[str, Any], enrichment: Dict[str, Any]) -> Dic
     result = {
         "decision": decision,
         "score": int(score),
-        "nukes_triggered": [],
+        "nukes_triggered": nukes,
         "top_contributors": top_contributors,
         "contributors": all_contributors
     }
-    print("[SCORER] ", result)
+    if os.getenv("HINGE_VERBOSE_LOGGING") == "1":
+        print("[SCORER] ", result)
     return result
 
 
@@ -324,7 +322,8 @@ def evaluate_profile_fields(extracted: Dict[str, Any], model: str | None = None)
         )
         dt_ms = int((time.perf_counter() - t0) * 1000)
         try:
-            print(f"[AI] evaluate_profile_fields model={model or 'gpt-5'} duration={dt_ms}ms")
+            if os.getenv("HINGE_VERBOSE_LOGGING") == "1":
+                print(f"[AI] evaluate_profile_fields model={model or 'gpt-5'} duration={dt_ms}ms")
         except Exception:
             pass
         _ai_trace_log([f"AI_TIME call_id=evaluate_profile_fields model={model or 'gpt-5'} duration_ms={dt_ms}"])
@@ -337,8 +336,9 @@ def evaluate_profile_fields(extracted: Dict[str, Any], model: str | None = None)
         parsed = normalize_dashes(parsed)
         # Print preview to console (truncated)
         try:
-            print("[AI JSON profile_eval]")
-            print(json.dumps(parsed, indent=2)[:2000])
+            if os.getenv("HINGE_VERBOSE_LOGGING") == "1":
+                print("[AI JSON profile_eval]")
+                print(json.dumps(parsed, indent=2)[:2000])
         except Exception:
             pass
         return parsed

@@ -89,15 +89,12 @@ def init_db(db_path: Optional[str] = None) -> None:
                 score INTEGER,
                 score_breakdown TEXT,
                 timestamp TEXT,
-                -- Opener strategy result
-                primary_style TEXT,
+                -- Opener strategy result (new 5-style schema)
+                playful REAL,
                 flirty REAL,
-                complimentary REAL,
-                playful_witty REAL,
-                observational REAL,
-                shared_interest REAL,
-                genuinely_warm REAL,
-                relationship_forward REAL,
+                warm REAL,
+                relatable REAL,
+                direct REAL,
                 overall_confidence REAL,
                 rationale TEXT,
                 -- Opening messages (JSON blob of 10 generated openers)
@@ -127,14 +124,11 @@ def init_db(db_path: Optional[str] = None) -> None:
         except Exception:
             pass
         for ddl in [
-            "ALTER TABLE profiles ADD COLUMN primary_style TEXT;",
+            "ALTER TABLE profiles ADD COLUMN playful REAL;",
             "ALTER TABLE profiles ADD COLUMN flirty REAL;",
-            "ALTER TABLE profiles ADD COLUMN complimentary REAL;",
-            "ALTER TABLE profiles ADD COLUMN playful_witty REAL;",
-            "ALTER TABLE profiles ADD COLUMN observational REAL;",
-            "ALTER TABLE profiles ADD COLUMN shared_interest REAL;",
-            "ALTER TABLE profiles ADD COLUMN genuinely_warm REAL;",
-            "ALTER TABLE profiles ADD COLUMN relationship_forward REAL;",
+            "ALTER TABLE profiles ADD COLUMN warm REAL;",
+            "ALTER TABLE profiles ADD COLUMN relatable REAL;",
+            "ALTER TABLE profiles ADD COLUMN direct REAL;",
             "ALTER TABLE profiles ADD COLUMN overall_confidence REAL;",
             "ALTER TABLE profiles ADD COLUMN rationale TEXT;",
             "ALTER TABLE profiles ADD COLUMN opening_messages_json TEXT;",
@@ -171,12 +165,9 @@ def update_profile_opener_fields(
 ) -> None:
     """
     Persist opening-style JSON fields onto the existing profiles row (one row per individual).
-      - primary_style (str)
-      - style_weights (dict with keys: flirty, complimentary, playful_witty, observational, shared_interest, genuinely_warm, relationship_forward)
+      - style_weights (dict with keys: playful, flirty, warm, relatable, direct)
       - overall_confidence (float)
       - rationale (str)
-      - personalisation_hooks (list[str])
-      - what_to_avoid (list[str])
     """
     if not isinstance(result, dict):
         result = {}
@@ -189,14 +180,11 @@ def update_profile_opener_fields(
             return 0.0
 
     vals = {
-        "primary_style": (result.get("primary_style") or "").strip(),
+        "playful": _to_float(style_weights.get("playful")),
         "flirty": _to_float(style_weights.get("flirty")),
-        "complimentary": _to_float(style_weights.get("complimentary")),
-        "playful_witty": _to_float(style_weights.get("playful_witty")),
-        "observational": _to_float(style_weights.get("observational")),
-        "shared_interest": _to_float(style_weights.get("shared_interest")),
-        "genuinely_warm": _to_float(style_weights.get("genuinely_warm")),
-        "relationship_forward": _to_float(style_weights.get("relationship_forward")),
+        "warm": _to_float(style_weights.get("warm")),
+        "relatable": _to_float(style_weights.get("relatable")),
+        "direct": _to_float(style_weights.get("direct")),
         "overall_confidence": _to_float(result.get("overall_confidence")),
         "rationale": result.get("rationale") or ""
     }
@@ -208,14 +196,11 @@ def update_profile_opener_fields(
         cur.execute(
             """
             UPDATE profiles SET
-                primary_style = :primary_style,
+                playful = :playful,
                 flirty = :flirty,
-                complimentary = :complimentary,
-                playful_witty = :playful_witty,
-                observational = :observational,
-                shared_interest = :shared_interest,
-                genuinely_warm = :genuinely_warm,
-                relationship_forward = :relationship_forward,
+                warm = :warm,
+                relatable = :relatable,
+                direct = :direct,
                 overall_confidence = :overall_confidence,
                 rationale = :rationale
             WHERE id = :id
