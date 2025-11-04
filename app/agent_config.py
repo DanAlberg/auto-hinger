@@ -188,3 +188,28 @@ FAST_CONFIG = AgentConfig(
     quality_threshold_medium=5,
     conversation_threshold_high=6
 )
+
+# ---------------- LLM routing defaults (LLM1/2/3) and GPT-4.1 parameters ----------------
+# Edit these in-code defaults to switch models and tune GPT‑4.1 behavior.
+#
+# LLM roles in the opener pipeline:
+#   - opening_style     → LLM1 (style weights)
+#   - opening_messages  → LLM2 (10 candidates)
+#   - opening_pick      → LLM3 (select the best)
+#
+# Change values to any of: "gpt-4.1", "gpt-4o", "gpt-5-mini", "gpt-5".
+LLM_MODELS: Dict[str, str] = {
+    "opening_style": "gpt-5-mini",
+    "opening_messages": "gpt-5",
+    "opening_pick": "gpt-5",
+}
+
+# GPT‑4.1 (Responses API) parameters used when a model is "gpt-4.1".
+# Adjust temperature/top_p/max_output_tokens here.
+LLM4_1_PARAMS: Dict[str, Any] = {
+    "temperature": 0.85,
+    "top_p": 0.85,
+    "max_output_tokens": 8192,
+    "store": False,
+    "include": [],  # advanced Responses 'include' fields – leave empty by default
+}

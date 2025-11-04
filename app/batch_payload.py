@@ -266,7 +266,7 @@ def get_latest_profile_payload(limit: int = 1, db_path: Optional[str] = None) ->
     return [build_profile_for_opening_style(r) for r in rows]
 
 
-def run_opening_style(profile_id: Optional[int] = None, db_path: Optional[str] = None, model: str = "gpt-5-mini") -> Dict[str, Any]:
+def run_opening_style(profile_id: Optional[int] = None, db_path: Optional[str] = None, model: Optional[str] = None) -> Dict[str, Any]:
     """
     Execute the opening-style LLM request for a given profile id (or latest if None),
     print the JSON to console, and persist fields onto the profiles row.
@@ -291,6 +291,8 @@ def run_opening_style(profile_id: Optional[int] = None, db_path: Optional[str] =
 
     # Call LLM (JSON-only)
     # LLM: LLM1 (Opening Style)
+    from agent_config import LLM_MODELS
+    model = model or LLM_MODELS["opening_style"]
     from time import perf_counter as _pf
     t0 = _pf()
     try:
@@ -411,7 +413,7 @@ def _build_opening_style_json_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return style
 
 
-def run_opening_messages(profile_id: Optional[int] = None, db_path: Optional[str] = None, model: str = "gpt-5") -> Dict[str, Any]:
+def run_opening_messages(profile_id: Optional[int] = None, db_path: Optional[str] = None, model: Optional[str] = None) -> Dict[str, Any]:
     """
     Execute the opening-messages LLM request for a given profile id (or latest if None).
     Uses scraped profile JSON + opening-style JSON; persists full JSON to opening_messages_json.
@@ -437,6 +439,8 @@ def run_opening_messages(profile_id: Optional[int] = None, db_path: Optional[str
 
     # Call LLM (JSON-only) with gpt-5 as requested
     # LLM: LLM2 (Opening Messages)
+    from agent_config import LLM_MODELS
+    model = model or LLM_MODELS["opening_messages"]
     from time import perf_counter as _pf
     t0 = _pf()
     try:
@@ -467,7 +471,7 @@ def run_opening_messages(profile_id: Optional[int] = None, db_path: Optional[str
     return result
 
 
-def run_opening_pick(profile_id: Optional[int] = None, db_path: Optional[str] = None, model: str = "gpt-5") -> Dict[str, Any]:
+def run_opening_pick(profile_id: Optional[int] = None, db_path: Optional[str] = None, model: Optional[str] = None) -> Dict[str, Any]:
     """
     Execute the opening-pick LLM request for a given profile id (or latest if None).
     Requires opening_messages_json to be present on the row.
@@ -510,6 +514,8 @@ def run_opening_pick(profile_id: Optional[int] = None, db_path: Optional[str] = 
 
     # Call LLM (JSON-only) with gpt-5
     # LLM: LLM3 (Opening Pick)
+    from agent_config import LLM_MODELS
+    model = model or LLM_MODELS["opening_pick"]
     from time import perf_counter as _pf
     t0 = _pf()
     try:
@@ -545,7 +551,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run opening-style analysis for a profile (latest by default).")
     parser.add_argument("--id", type=int, default=None, help="Profile id to analyse. If omitted, uses latest.")
     parser.add_argument("--db", type=str, default=None, help="Explicit path to profiles.db (optional).")
-    parser.add_argument("--model", type=str, default="gpt-5-mini", help="Model name.")
+    parser.add_argument("--model", type=str, default=None, help="Model name (optional). If omitted, uses agent_config.LLM_MODELS['opening_style'].")
     args = parser.parse_args()
     out = run_opening_style(profile_id=args.id, db_path=args.db, model=args.model)
     try:

@@ -154,11 +154,123 @@ def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float
     return parsed
 
 
-def chat_json_system_user(system_prompt: str, user_prompt: str, model: str = "gpt-5-mini") -> Dict[str, Any]:
+def _responses_to_text(resp) -> str:
     """
-    JSON-only chat call with an explicit system message and a user message.
+    Extract best-effort text from a Responses API result.
+    Tries resp.output_text first, then concatenates text parts from resp.output[*].content[*].text.
+    """
+    try:
+        text = getattr(resp, "output_text", None)
+        if text:
+            return text
+    except Exception:
+        pass
+    try:
+        parts = []
+        for item in getattr(resp, "output", []) or []:
+            for c in getattr(item, "content", []) or []:
+                # Some SDKs return c.text as a str, others as an object with .value
+                t = getattr(c, "text", None)
+                if isinstance(t, str):
+                    parts.append(t)
+                elif t is not None:
+                    v = getattr(t, "value", None)
+                    if isinstance(v, str):
+                        parts.append(v)
+        if parts:
+            return "".join(parts)
+    except Exception:
+        pass
+    try:
+        return str(resp)
+    except Exception:
+        return ""
+
+
+def _responses_json(system_prompt: str, user_prompt: str, model: str, **kwargs) -> Dict[str, Any]:
+    """
+    GPT‑4.1 path using Responses API. Builds input role/content blocks and enforces JSON output when possible.
     """
     from time import perf_counter
+    from agent_config import LLM4_1_PARAMS  # central knobs for temperature/top_p/etc.
+    _ai_trace_log([
+        f"AI_REQ call_id=responses_json model={model} ts_request={datetime.now().isoformat(timespec='seconds')}",
+        "PROMPT_REF=analyzer_openai._responses_json"
+    ])
+    input_blocks = [
+        {"role": "system", "content": [{"type": "input_text", "text": system_prompt or ""}]},
+        {"role": "user", "content": [{"type": "input_text", "text": user_prompt or ""}]},
+    ]
+    params = {
+        "model": model,
+        "input": input_blocks,
+        "temperature": kwargs.get("temperature", LLM4_1_PARAMS.get("temperature", 0.85)),
+        "top_p": kwargs.get("top_p", LLM4_1_PARAMS.get("top_p", 0.85)),
+        "max_output_tokens": kwargs.get("max_output_tokens", LLM4_1_PARAMS.get("max_output_tokens", 8192)),
+        "store": kwargs.get("store", LLM4_1_PARAMS.get("store", False)),
+        "include": kwargs.get("include", LLM4_1_PARAMS.get("include", [])),
+        "reasoning": kwargs.get("reasoning", {}),
+        "tools": kwargs.get("tools", []),
+    }
+    # Prefer JSON outputs when supported by Responses API; fall back gracefully if not
+    use_json_format = kwargs.get("response_format", {"type": "json_object"})
+    t0 = perf_counter()
+    try:
+        resp = _client.responses.create(**params, response_format=use_json_format)
+    except Exception:
+        # Retry without response_format if not supported
+        resp = _client.responses.create(**params)
+    dt_ms = int((perf_counter() - t0) * 1000)
+    try:
+        if os.getenv("HINGE_VERBOSE_LOGGING") == "1":
+            print(f"[AI] responses_json model={model} duration={dt_ms}ms")
+    except Exception:
+        pass
+    _ai_trace_log([f"AI_TIME call_id=responses_json model={model} duration_ms={dt_ms}"])
+
+    raw = _responses_to_text(resp) or "{}"
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        # Defensive brace clipping if the model drifts
+        try:
+            start = raw.find("{"); end = raw.rfind("}")
+            parsed = json.loads(raw[start:end+1]) if start != -1 and end != -1 and end > start else {}
+        except Exception:
+            parsed = {}
+
+    parsed = normalize_dashes(parsed)
+    try:
+        _ai_trace_log([
+            f"AI_RESP call_id=responses_json model={model} ts_response={datetime.now().isoformat(timespec='seconds')} duration_ms={dt_ms}",
+            "OUTPUT=<<<BEGIN_JSON",
+            *json.dumps(parsed, ensure_ascii=False, indent=2).splitlines(),
+            "<<<END_JSON",
+        ])
+    except Exception:
+        pass
+    try:
+        if os.getenv("HINGE_VERBOSE_LOGGING") == "1":
+            print("[AI JSON responses_json]")
+            print(json.dumps(parsed, indent=2)[:2000])
+    except Exception:
+        pass
+    return parsed
+
+
+def chat_json_system_user(system_prompt: str, user_prompt: str, model: Optional[str] = None, **kwargs) -> Dict[str, Any]:
+    """
+    JSON-only chat call with an explicit system message and a user message.
+    Routing:
+      - model startswith("gpt-4.1") → Responses API (_responses_json)
+      - else → Chat Completions (current behavior)
+    """
+    from time import perf_counter
+    model = model or "gpt-5-mini"
+    # Routing rule for 4.1
+    if isinstance(model, str) and model.startswith("gpt-4.1"):
+        return _responses_json(system_prompt, user_prompt, model, **kwargs)
+
     _ai_trace_log([
         f"AI_REQ call_id=chat_json_system_user model={model} ts_request={datetime.now().isoformat(timespec='seconds')} response_format=json_object",
         "PROMPT_REF=see caller (batch_payload.run_opening_* or profile_eval.evaluate_profile_fields)"
@@ -191,9 +303,7 @@ def chat_json_system_user(system_prompt: str, user_prompt: str, model: str = "gp
         except Exception:
             parsed = {}
 
-    # LLM: LLM1 (Opening Style) / LLM2 (Opening Messages) / LLM3 (Opening Pick) — normalize output
     parsed = normalize_dashes(parsed)
-    # Log normalized output to ai_trace
     try:
         _ai_trace_log([
             f"AI_RESP call_id=chat_json_system_user model={model} ts_response={datetime.now().isoformat(timespec='seconds')} duration_ms={dt_ms}",
@@ -203,7 +313,6 @@ def chat_json_system_user(system_prompt: str, user_prompt: str, model: str = "gp
         ])
     except Exception:
         pass
-    # Pretty-print the JSON to console for quick review (truncated)
     try:
         if os.getenv("HINGE_VERBOSE_LOGGING") == "1":
             print("[AI JSON chat_json_system_user]")
