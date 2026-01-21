@@ -1,20 +1,31 @@
 # app/analyzer_openai.py
-# OpenAI-backed analyzer implementations (facade-compatible signatures)
+# LLM-backed analyzer implementations (OpenAI or Gemini via llm_client)
 # so existing call sites remain stable.
 
 import os
 import json
 import base64
 from typing import Optional, Dict, Any, List
-from openai import OpenAI
 import config  # ensure .env is loaded at import time
 import time
+
+from llm_client import get_default_small_model, get_llm_client, get_llm_provider, resolve_model
 
 from text_utils import normalize_dashes
 
 
-# Initialize OpenAI client (reads OPENAI_API_KEY from environment)
-_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Initialize LLM client lazily (OpenAI or Gemini via llm_client)
+_client = None
+_client_provider = None
+
+
+def _get_client():
+    global _client, _client_provider
+    provider = get_llm_provider()
+    if _client is None or provider != _client_provider:
+        _client = get_llm_client()
+        _client_provider = provider
+    return _client
 
 # --- AI trace helpers (inputs only) ---
 from datetime import datetime
@@ -49,14 +60,15 @@ def _b64_image(image_path: str) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
-def _chat_text(prompt: str, temperature: float = 0.2, model: str = "gpt-5-mini") -> str:
+def _chat_text(prompt: str, temperature: float = 0.2, model: Optional[str] = None) -> str:
+    model = resolve_model(model or get_default_small_model())
     # AI trace: log the prompt exactly as sent (no images here)
     _ai_trace_log([
         f"AI_REQ call_id=chat_text model={model} ts_request={datetime.now().isoformat(timespec='seconds')}",
         "PROMPT_REF=analyzer_openai._chat_text"
     ])
     t0 = time.perf_counter()
-    resp = _client.chat.completions.create(
+    resp = _get_client().chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -79,7 +91,8 @@ def _chat_text(prompt: str, temperature: float = 0.2, model: str = "gpt-5-mini")
     return content.strip()
 
 
-def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float = 0.0, model: str = "gpt-5-mini") -> Dict[str, Any]:
+def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float = 0.0, model: Optional[str] = None) -> Dict[str, Any]:
+    model = resolve_model(model or get_default_small_model())
     messages: List[Dict[str, Any]] = []
     if image_path:
         # AI trace: log prompt and image path + size (never log base64)
@@ -108,7 +121,7 @@ def _chat_json(prompt: str, image_path: Optional[str] = None, temperature: float
         messages.append({"role": "user", "content": prompt})
 
     t0 = time.perf_counter()
-    resp = _client.chat.completions.create(
+    resp = _get_client().chat.completions.create(
         model=model,
         response_format={"type": "json_object"},
         messages=messages,
@@ -189,10 +202,11 @@ def _responses_to_text(resp) -> str:
 
 def _responses_json(system_prompt: str, user_prompt: str, model: str, **kwargs) -> Dict[str, Any]:
     """
-    GPT‑4.1 path using Responses API. Builds input role/content blocks and enforces JSON output when possible.
+    GPT-4.1 path using Responses API. Builds input role/content blocks and enforces JSON output when possible.
     """
     from time import perf_counter
     from agent_config import LLM4_1_PARAMS  # central knobs for temperature/top_p/etc.
+    model = resolve_model(model)
     _ai_trace_log([
         f"AI_REQ call_id=responses_json model={model} ts_request={datetime.now().isoformat(timespec='seconds')}",
         "PROMPT_REF=analyzer_openai._responses_json"
@@ -216,10 +230,10 @@ def _responses_json(system_prompt: str, user_prompt: str, model: str, **kwargs) 
     use_json_format = kwargs.get("response_format", {"type": "json_object"})
     t0 = perf_counter()
     try:
-        resp = _client.responses.create(**params, response_format=use_json_format)
+        resp = _get_client().responses.create(**params, response_format=use_json_format)
     except Exception:
         # Retry without response_format if not supported
-        resp = _client.responses.create(**params)
+        resp = _get_client().responses.create(**params)
     dt_ms = int((perf_counter() - t0) * 1000)
     try:
         if os.getenv("HINGE_VERBOSE_LOGGING") == "1":
@@ -266,9 +280,9 @@ def chat_json_system_user(system_prompt: str, user_prompt: str, model: Optional[
       - else → Chat Completions (current behavior)
     """
     from time import perf_counter
-    model = model or "gpt-5-mini"
+    model = resolve_model(model or get_default_small_model())
     # Routing rule for 4.1
-    if isinstance(model, str) and model.startswith("gpt-4.1"):
+    if get_llm_provider() == "openai" and isinstance(model, str) and model.startswith("gpt-4.1"):
         return _responses_json(system_prompt, user_prompt, model, **kwargs)
 
     _ai_trace_log([
@@ -280,7 +294,7 @@ def chat_json_system_user(system_prompt: str, user_prompt: str, model: Optional[
         {"role": "user", "content": user_prompt or ""},
     ]
     t0 = perf_counter()
-    resp = _client.chat.completions.create(
+    resp = _get_client().chat.completions.create(
         model=model,
         response_format={"type": "json_object"},
         messages=messages,
@@ -343,8 +357,9 @@ def extract_text_from_image(image_path: str) -> str:
         _sz = os.path.getsize(image_path)
     except Exception:
         _sz = "?"
+    model = resolve_model(get_default_small_model())
     _ai_trace_log([
-        "AI_REQ call_id=extract_text_from_image model=gpt-5-mini ts_request={}".format(datetime.now().isoformat(timespec="seconds")),
+        "AI_REQ call_id=extract_text_from_image model={} ts_request={}".format(model, datetime.now().isoformat(timespec="seconds")),
         "PROMPT_REF=analyzer_openai.extract_text_from_image",
         f"IMAGE image_path={image_path} image_size={_sz} bytes"
     ])
@@ -357,20 +372,20 @@ def extract_text_from_image(image_path: str) -> str:
         ]
     }]
     t0 = time.perf_counter()
-    resp = _client.chat.completions.create(
-        model="gpt-5-mini",
+    resp = _get_client().chat.completions.create(
+        model=model,
         messages=messages,
     )
     dt_ms = int((time.perf_counter() - t0) * 1000)
     try:
         if os.getenv("HINGE_VERBOSE_LOGGING") == "1":
-            print(f"[AI] extract_text_from_image model=gpt-5-mini duration={dt_ms}ms")
+            print(f"[AI] extract_text_from_image model={model} duration={dt_ms}ms")
     except Exception:
         pass
     text_out = (resp.choices[0].message.content or "").strip()
     try:
         _ai_trace_log([
-            "AI_RESP call_id=extract_text_from_image model=gpt-5-mini ts_response={} duration_ms={}".format(datetime.now().isoformat(timespec="seconds"), dt_ms),
+            "AI_RESP call_id=extract_text_from_image model={} ts_response={} duration_ms={}".format(model, datetime.now().isoformat(timespec="seconds"), dt_ms),
             "OUTPUT=<<<BEGIN_TEXT",
             *text_out.splitlines(),
             "<<<END_TEXT",

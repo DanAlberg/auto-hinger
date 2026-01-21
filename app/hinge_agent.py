@@ -5,13 +5,13 @@ import time
 import uuid
 from typing import Dict, Any, Optional, TypedDict
 import base64
-from openai import OpenAI
 import os
 import shutil
 from datetime import datetime
 from functools import wraps
 
 from text_utils import normalize_dashes
+from llm_client import get_llm_client, resolve_model
 
 from helper_functions import (
     connect_device, get_screen_resolution, open_hinge, reset_hinge_app,
@@ -523,6 +523,7 @@ class HingeAgent:
         """
         
         try:
+            model = resolve_model(getattr(self.config, "extraction_small_model", "gpt-5-mini"))
             if state['current_screenshot']:
                 # Include screenshot for visual analysis
                 with open(state['current_screenshot'], 'rb') as f:
@@ -562,7 +563,7 @@ class HingeAgent:
                 except Exception:
                     _sz = "?"
                 self._ai_trace_log([
-                    "AI_REQ call_id=ai_decide_action model=gpt-5-mini ts_request={}".format(datetime.now().isoformat(timespec="seconds")),
+                    "AI_REQ call_id=ai_decide_action model={} ts_request={}".format(model, datetime.now().isoformat(timespec="seconds")),
                     "PROMPT_REF=hinge_agent.ai_decide_action_node",
                     f"IMAGE image_path={state['current_screenshot']} image_size={_sz} bytes"
                 ])
@@ -579,31 +580,31 @@ class HingeAgent:
                 
                 messages = [{"role": "user", "content": prompt}]
                 self._ai_trace_log([
-                    "AI_REQ call_id=ai_decide_action model=gpt-5-mini ts_request={}".format(datetime.now().isoformat(timespec="seconds")),
+                    "AI_REQ call_id=ai_decide_action model={} ts_request={}".format(model, datetime.now().isoformat(timespec="seconds")),
                     "PROMPT_REF=hinge_agent.ai_decide_action_node",
                 ])
             
             t0 = time.perf_counter()
-            client = self.ai_client or OpenAI()
+            client = self.ai_client or get_llm_client()
             self.ai_client = client
             resp = client.chat.completions.create(
-                model="gpt-5-mini",
+                model=model,
                 response_format={"type": "json_object"},
                 messages=messages
             )
             dt_ms = int((time.perf_counter() - t0) * 1000)
             try:
-                self._debug(f"[AI] ai_decide_action model=gpt-5-mini duration={dt_ms}ms")
+                self._debug(f"[AI] ai_decide_action model={model} duration={dt_ms}ms")
             except Exception:
                 pass
-            self._ai_trace_log([f"AI_TIME call_id=ai_decide_action model=gpt-5-mini duration_ms={dt_ms}"])
+            self._ai_trace_log([f"AI_TIME call_id=ai_decide_action model={model} duration_ms={dt_ms}"])
             
             decision = json.loads(resp.choices[0].message.content) if resp.choices[0].message and resp.choices[0].message.content else {}
             next_action = decision.get('next_action', 'capture_screenshot')
             reasoning = decision.get('reasoning', 'Default action')
             try:
                 self._ai_trace_log([
-                    "AI_RESP call_id=ai_decide_action model=gpt-5-mini ts_response={}".format(datetime.now().isoformat(timespec="seconds")),
+                    "AI_RESP call_id=ai_decide_action model={} ts_response={}".format(model, datetime.now().isoformat(timespec="seconds")),
                     "OUTPUT=<<<BEGIN_JSON",
                     *json.dumps(decision, ensure_ascii=False, indent=2).splitlines(),
                     "<<<END_JSON",
@@ -776,15 +777,16 @@ class HingeAgent:
                 _sz = os.path.getsize(screenshot_path)
             except Exception:
                 _sz = "?"
+            model = resolve_model(getattr(self.config, "extraction_small_model", "gpt-5-mini"))
             self._ai_trace_log([
-                "AI_REQ call_id=extract_user_content_only model=gpt-5-mini ts_request={}".format(datetime.now().isoformat(timespec="seconds")),
+                "AI_REQ call_id=extract_user_content_only model={} ts_request={}".format(model, datetime.now().isoformat(timespec="seconds")),
                 "PROMPT_REF=hinge_agent._extract_user_content_only",
                 f"IMAGE image_path={screenshot_path} image_size={_sz} bytes"
             ])
-            client = self.ai_client or OpenAI()
+            client = self.ai_client or get_llm_client()
             self.ai_client = client
             resp = client.chat.completions.create(
-                model="gpt-5-mini",
+                model=model,
                 messages=[{
                     "role": "user",
                     "content": [
@@ -800,7 +802,7 @@ class HingeAgent:
             _out = content.strip()
             try:
                 self._ai_trace_log([
-                    "AI_RESP call_id=extract_user_content_only model=gpt-5-mini ts_response={}".format(datetime.now().isoformat(timespec="seconds")),
+                    "AI_RESP call_id=extract_user_content_only model={} ts_response={}".format(model, datetime.now().isoformat(timespec="seconds")),
                     "OUTPUT=<<<BEGIN_TEXT",
                     *_out.splitlines(),
                     "<<<END_TEXT",
@@ -1021,7 +1023,7 @@ class HingeAgent:
                     timings["payload_prep_ms"] = int((time.perf_counter() - t_payload) * 1000)
                 except Exception:
                     pass
-                # Submit to LLM (uses gpt-5 by default; gpt-5-mini for small logical calls if needed)
+                # Submit to LLM (uses config.extraction_small_model by default)
                 t0_ext = time.perf_counter()
                 extracted_raw = self._submit_llm_batch_request(llm_payload)
                 try:
@@ -1030,9 +1032,10 @@ class HingeAgent:
                     pass
                 # Capture LLM metrics for Profile Scrape
                 try:
+                    scrape_model = resolve_model(getattr(self.config, "extraction_small_model", "gpt-5-mini"))
                     metrics_existing = dict(state.get("llm_metrics", {})) if isinstance(state.get("llm_metrics", {}), dict) else {}
                     metrics_existing["profile_scrape"] = {
-                        "model": "gpt-5-mini",
+                        "model": scrape_model,
                         "duration_ms": int(timings.get("extraction_llm_ms", 0) or 0),
                         "ts": datetime.now().isoformat(timespec="seconds")
                     }
@@ -1076,7 +1079,8 @@ class HingeAgent:
             eval_result = {}
             try:
                 t0_eval = time.perf_counter()
-                eval_result = evaluate_profile_fields(extracted_profile, model="gpt-5-mini")
+                eval_model = resolve_model(getattr(self.config, "extraction_small_model", "gpt-5-mini"))
+                eval_result = evaluate_profile_fields(extracted_profile, model=eval_model)
                 try:
                     timings["profile_eval_ms"] = int((time.perf_counter() - t0_eval) * 1000)
                 except Exception:
@@ -1085,7 +1089,7 @@ class HingeAgent:
                 try:
                     metrics_existing = dict(state.get("llm_metrics", {})) if isinstance(state.get("llm_metrics", {}), dict) else {}
                     metrics_existing["eval"] = {
-                        "model": "gpt-5-mini",
+                        "model": eval_model,
                         "duration_ms": int(timings.get("profile_eval_ms", 0) or 0),
                         "ts": datetime.now().isoformat(timespec="seconds")
                     }
@@ -1491,9 +1495,10 @@ class HingeAgent:
             Be thorough since this represents their complete profile content.
             """
             # Build messages with all screenshots attached
+            model = resolve_model(getattr(self.config, "extraction_small_model", "gpt-5-mini"))
             content_parts = [{"type": "text", "text": prompt}]
             trace_lines = [
-                "AI_REQ call_id=analyze_complete_profile model=gpt-5-mini ts_request={}".format(datetime.now().isoformat(timespec="seconds")),
+                "AI_REQ call_id=analyze_complete_profile model={} ts_request={}".format(model, datetime.now().isoformat(timespec="seconds")),
                 "PROMPT_REF=hinge_agent._analyze_complete_profile",
                 f"IMAGES count={len(screenshots)}"
             ]
@@ -1509,26 +1514,26 @@ class HingeAgent:
             self._ai_trace_log(trace_lines)
             
             t0 = time.perf_counter()
-            client = self.ai_client or OpenAI()
+            client = self.ai_client or get_llm_client()
             self.ai_client = client
             resp = client.chat.completions.create(
-                model="gpt-5-mini",
+                model=model,
                 response_format={"type": "json_object"},
                 messages=[{"role": "user", "content": content_parts}]
             )
             dt_ms = int((time.perf_counter() - t0) * 1000)
             try:
-                self._debug(f"[AI] analyze_complete_profile model=gpt-5-mini images={len(screenshots)} duration={dt_ms}ms")
+                self._debug(f"[AI] analyze_complete_profile model={model} images={len(screenshots)} duration={dt_ms}ms")
             except Exception:
                 pass
-            self._ai_trace_log([f"AI_TIME call_id=analyze_complete_profile model=gpt-5-mini images={len(screenshots)} duration_ms={dt_ms}"])
+            self._ai_trace_log([f"AI_TIME call_id=analyze_complete_profile model={model} images={len(screenshots)} duration_ms={dt_ms}"])
             try:
                 parsed = json.loads(resp.choices[0].message.content or "{}")
                 # LLM: Profile Scrape (analysis) — normalize output
                 parsed = normalize_dashes(parsed)
                 try:
                     self._ai_trace_log([
-                        "AI_RESP call_id=analyze_complete_profile model=gpt-5-mini ts_response={}".format(datetime.now().isoformat(timespec="seconds")),
+                        "AI_RESP call_id=analyze_complete_profile model={} ts_response={}".format(model, datetime.now().isoformat(timespec="seconds")),
                         "OUTPUT=<<<BEGIN_JSON",
                         *json.dumps(parsed, ensure_ascii=False, indent=2).splitlines(),
                         "<<<END_JSON",
@@ -1558,7 +1563,7 @@ class HingeAgent:
         """
         Submit the built OpenAI-compatible payload to the model:
         - Prepend a system message to enforce strict JSON with required keys.
-        - Use gpt-5-mini by default; keep gpt-5 for heavy tasks.
+        - Use config.extraction_small_model by default; keep config.extraction_model for heavy tasks.
         - Retry once with stricter instructions on parse/validation failure.
         """
         messages = payload.get("messages", []) or []
@@ -1579,11 +1584,11 @@ class HingeAgent:
             ),
         }
 
-        model = "gpt-5-mini"
+        model = resolve_model(getattr(self.config, "extraction_small_model", "gpt-5-mini"))
         # First attempt
         def _call(msgs):
             t0 = time.perf_counter()
-            client = self.ai_client or OpenAI()
+            client = self.ai_client or get_llm_client()
             self.ai_client = client
             resp = client.chat.completions.create(
                 model=model,
@@ -1630,11 +1635,11 @@ class HingeAgent:
                 result = normalize_dashes(result)
                 try:
                     self._ai_trace_log([
-                        "AI_RESP call_id=submit_batch model=gpt-5-mini ts_response={}".format(datetime.now().isoformat(timespec="seconds")),
-                        "OUTPUT=<<<BEGIN_JSON",
-                        *json.dumps(result, ensure_ascii=False, indent=2).splitlines(),
-                        "<<<END_JSON",
-                    ])
+                    "AI_RESP call_id=submit_batch model={} ts_response={}".format(model, datetime.now().isoformat(timespec="seconds")),
+                    "OUTPUT=<<<BEGIN_JSON",
+                    *json.dumps(result, ensure_ascii=False, indent=2).splitlines(),
+                    "<<<END_JSON",
+                ])
                 except Exception:
                     pass
                 return result
@@ -1678,7 +1683,7 @@ class HingeAgent:
             retry_result = normalize_dashes(retry_result)
             try:
                 self._ai_trace_log([
-                    "AI_RESP call_id=submit_batch model=gpt-5-mini ts_response={}".format(datetime.now().isoformat(timespec="seconds")),
+                    "AI_RESP call_id=submit_batch model={} ts_response={}".format(model, datetime.now().isoformat(timespec="seconds")),
                     "OUTPUT=<<<BEGIN_JSON",
                     *json.dumps(retry_result, ensure_ascii=False, indent=2).splitlines(),
                     "<<<END_JSON",
@@ -1727,7 +1732,7 @@ class HingeAgent:
                 retry_result = normalize_dashes(retry_result)
                 try:
                     self._ai_trace_log([
-                        "AI_RESP call_id=submit_batch model=gpt-5-mini ts_response={}".format(datetime.now().isoformat(timespec="seconds")),
+                        "AI_RESP call_id=submit_batch model={} ts_response={}".format(model, datetime.now().isoformat(timespec="seconds")),
                         "OUTPUT=<<<BEGIN_JSON",
                         *json.dumps(retry_result, ensure_ascii=False, indent=2).splitlines(),
                         "<<<END_JSON",

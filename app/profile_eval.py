@@ -1,19 +1,30 @@
 # app/profile_eval.py
-# Evaluates extracted profile fields (Home town, Job title, University) via GPT-5
+# Evaluates extracted profile fields (Home town, Job title, University) via LLM
 # Returns enforced-JSON with modifiers per provided rules.
 
 import os
 import json
 import time
 from typing import Any, Dict, List, Tuple
-from openai import OpenAI
 import config  # ensure .env is loaded at import time
 from text_utils import normalize_dashes
 
+from llm_client import get_default_model, get_llm_client, get_llm_provider, resolve_model
+
 from prompt_engine import build_profile_eval_prompt
 
-# Initialize OpenAI client (reads OPENAI_API_KEY from environment)
-_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Initialize LLM client lazily (OpenAI or Gemini via llm_client)
+_client = None
+_client_provider = None
+
+
+def _get_client():
+    global _client, _client_provider
+    provider = get_llm_provider()
+    if _client is None or provider != _client_provider:
+        _client = get_llm_client()
+        _client_provider = provider
+    return _client
 
 # Minimal AI trace helpers (inputs only), reusing same env knobs as analyzer_openai.py
 from datetime import datetime
@@ -305,9 +316,11 @@ def evaluate_profile_fields(extracted: Dict[str, Any], model: str | None = None)
 
     prompt = build_profile_eval_prompt(home_town, job_title, university)
 
+    requested_model = model or get_default_model()
+    resolved_model = resolve_model(requested_model)
     # AI trace input (prompt only)
     _ai_trace_log([
-        f"AI_CALL call_id=evaluate_profile_fields model={model or 'gpt-5'} response_format=json_object",
+        f"AI_CALL call_id=evaluate_profile_fields model={resolved_model} response_format=json_object",
         "PROMPT=<<<BEGIN",
         *prompt.splitlines(),
         "<<<END",
@@ -315,18 +328,18 @@ def evaluate_profile_fields(extracted: Dict[str, Any], model: str | None = None)
 
     try:
         t0 = time.perf_counter()
-        resp = _client.chat.completions.create(
-            model=(model or "gpt-5"),
+        resp = _get_client().chat.completions.create(
+            model=resolved_model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}]
         )
         dt_ms = int((time.perf_counter() - t0) * 1000)
         try:
             if os.getenv("HINGE_VERBOSE_LOGGING") == "1":
-                print(f"[AI] evaluate_profile_fields model={model or 'gpt-5'} duration={dt_ms}ms")
+                print(f"[AI] evaluate_profile_fields model={resolved_model} duration={dt_ms}ms")
         except Exception:
             pass
-        _ai_trace_log([f"AI_TIME call_id=evaluate_profile_fields model={model or 'gpt-5'} duration_ms={dt_ms}"])
+        _ai_trace_log([f"AI_TIME call_id=evaluate_profile_fields model={resolved_model} duration_ms={dt_ms}"])
 
         raw = resp.choices[0].message.content or "{}"
         parsed = json.loads(raw)

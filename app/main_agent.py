@@ -1,12 +1,13 @@
 # app/main_agent.py
 
 """
-Main entry point for the OpenAI-controlled Hinge automation agent.
-This uses OpenAI to intelligently select and execute tools for dating app automation.
+Main entry point for the AI-controlled Hinge automation agent.
+This uses an LLM to intelligently select and execute tools for dating app automation.
 """
 
 import asyncio
 import argparse
+import os
 from typing import Dict, Any
 import time
 import json
@@ -41,6 +42,62 @@ def parse_arguments():
         type=str,
         default="127.0.0.1", 
         help="Device IP address (default: 127.0.0.1)"
+    )
+
+    parser.add_argument(
+        "--llm-model",
+        dest="llm_model",
+        type=str,
+        default=None,
+        help="Override the default (large) model id for the active provider."
+    )
+    parser.add_argument(
+        "--llm-small-model",
+        dest="llm_small_model",
+        type=str,
+        default=None,
+        help="Override the small/fast model id for the active provider."
+    )
+
+    parser.add_argument(
+        "--llm-provider",
+        choices=["openai", "gemini"],
+        default=None,
+        help="LLM provider to use (default: env LLM_PROVIDER or openai)"
+    )
+    parser.add_argument(
+        "--gemini-model",
+        choices=[
+            "gemini-3-flash-preview",
+            "gemini-3-pro-preview",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+        ],
+        default=None,
+        help="Primary Gemini model id (Vertex)."
+    )
+    parser.add_argument(
+        "--gemini-small-model",
+        choices=[
+            "gemini-3-flash-preview",
+            "gemini-3-pro-preview",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+        ],
+        default=None,
+        help="Small/fast Gemini model id (Vertex)."
+    )
+    parser.add_argument(
+        "--gemini-project",
+        type=str,
+        default=None,
+        help="Vertex project id for Gemini."
+    )
+    parser.add_argument(
+        "--gemini-location",
+        type=str,
+        default=None,
+        help="Vertex location for Gemini."
     )
     
     parser.add_argument(
@@ -109,6 +166,30 @@ def get_config(config_name: str, args) -> AgentConfig:
     # Enable AI trace: respect default from config, OR enable when flags are provided
     config.ai_trace = (getattr(config, "ai_trace", False) or args.trace_ai or args.manual_confirm)
 
+    # LLM routing and Gemini settings (CLI overrides env overrides defaults)
+    config.llm_provider = args.llm_provider or os.getenv("LLM_PROVIDER", getattr(config, "llm_provider", "openai"))
+    config.gemini_model = args.gemini_model or os.getenv("GEMINI_MODEL", getattr(config, "gemini_model", "gemini-2.5-pro"))
+    config.gemini_small_model = args.gemini_small_model or os.getenv("GEMINI_SMALL_MODEL", getattr(config, "gemini_small_model", "gemini-2.5-flash"))
+    config.gemini_project_id = args.gemini_project or os.getenv("GEMINI_PROJECT_ID", getattr(config, "gemini_project_id", ""))
+    config.gemini_location = args.gemini_location or os.getenv("GEMINI_LOCATION", getattr(config, "gemini_location", ""))
+    try:
+        env_use_vertex = os.getenv("GEMINI_USE_VERTEX")
+        if env_use_vertex is not None:
+            config.gemini_use_vertex = env_use_vertex.strip().lower() in ("1", "true", "yes", "y", "on")
+    except Exception:
+        pass
+
+    # Model overrides (provider-agnostic)
+    llm_model_override = getattr(args, "llm_model", None) or os.getenv("LLM_MODEL")
+    llm_small_override = getattr(args, "llm_small_model", None) or os.getenv("LLM_SMALL_MODEL")
+
+    if config.llm_provider == "gemini":
+        config.extraction_model = llm_model_override or config.gemini_model
+        config.extraction_small_model = llm_small_override or config.gemini_small_model
+    else:
+        config.extraction_model = llm_model_override or os.getenv("OPENAI_MODEL") or config.extraction_model
+        config.extraction_small_model = llm_small_override or os.getenv("OPENAI_SMALL_MODEL") or config.extraction_small_model
+
     # New flags
     config.like_mode = args.like_mode
     config.deterministic_mode = not args.ai_routing
@@ -116,6 +197,25 @@ def get_config(config_name: str, args) -> AgentConfig:
     # Temporary bypass for startup pre-check (like button visibility)
     try:
         config.precheck_strict = not getattr(args, "skip_precheck", False)
+    except Exception:
+        pass
+
+    # Propagate to env for llm_client
+    try:
+        os.environ["LLM_PROVIDER"] = str(config.llm_provider)
+        if getattr(config, "extraction_model", ""):
+            os.environ["LLM_MODEL"] = str(config.extraction_model)
+        if getattr(config, "extraction_small_model", ""):
+            os.environ["LLM_SMALL_MODEL"] = str(config.extraction_small_model)
+        if getattr(config, "gemini_model", ""):
+            os.environ["GEMINI_MODEL"] = str(config.gemini_model)
+        if getattr(config, "gemini_small_model", ""):
+            os.environ["GEMINI_SMALL_MODEL"] = str(config.gemini_small_model)
+        if getattr(config, "gemini_project_id", ""):
+            os.environ["GEMINI_PROJECT_ID"] = str(config.gemini_project_id)
+        if getattr(config, "gemini_location", ""):
+            os.environ["GEMINI_LOCATION"] = str(config.gemini_location)
+        os.environ["GEMINI_USE_VERTEX"] = "1" if getattr(config, "gemini_use_vertex", True) else "0"
     except Exception:
         pass
     
@@ -146,7 +246,7 @@ def print_session_summary(result: Dict[str, Any]):
 
 
 async def main():
-    """Main entry point for the OpenAI-controlled agent"""
+    """Main entry point for the AI-controlled agent"""
     print("🤖 Starting Hinge Automation Agent")
     print("="*55)
     
@@ -172,7 +272,15 @@ async def main():
         print(f"🧭 Deterministic Mode: {config.deterministic_mode}")
         print(f"🧪 Dry Run Mode: {getattr(config, 'dry_run', False)}")
         print(f"️ Precheck Strict: {getattr(config, 'precheck_strict', True)}")
-        print(f"🤖 AI Controller: OpenAI")
+        llm_provider = getattr(config, "llm_provider", "openai")
+        if llm_provider == "gemini":
+            print("AI Controller: Gemini (Vertex)")
+            print(f"Gemini Model: {getattr(config, 'gemini_model', '')}")
+            print(f"Gemini Small Model: {getattr(config, 'gemini_small_model', '')}")
+            print(f"Gemini Project: {getattr(config, 'gemini_project_id', '') or '(env)'}")
+            print(f"Gemini Location: {getattr(config, 'gemini_location', '') or '(env)'}")
+        else:
+            print("AI Controller: OpenAI")
         print()
         
         # Create and run Hinge agent
@@ -183,7 +291,10 @@ async def main():
         
         # Run automation
         print("🎬 Starting automation workflow...")
-        print("🧠 OpenAI will manage state and intelligently route actions...")
+        if llm_provider == "gemini":
+            print("Gemini will manage state and intelligently route actions...")
+        else:
+            print("OpenAI will manage state and intelligently route actions...")
 
         # Timing start
         app_dir = Path(__file__).parent

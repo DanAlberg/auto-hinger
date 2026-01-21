@@ -83,6 +83,22 @@ Outputs
 - Screenshots: app/images/
 - Logs: app/logs/
 
+Main flow (runtime)
+- Entry: app/main_agent.py → app/hinge_agent.py
+- Device/CV: app/helper_functions.py, app/cv_biometrics.py, app/assets/
+- LLM: app/analyzer.py → app/analyzer_openai.py + app/llm_client.py
+- Prompting/scoring: app/prompt_engine.py, app/profile_eval.py, app/batch_payload.py
+- Storage/export: app/sqlite_store.py, app/data_store.py, app/profile_export.py, app/text_utils.py
+
+LLM routing quick reference
+- Small model (LLM_SMALL_MODEL / OPENAI_SMALL_MODEL / GEMINI_SMALL_MODEL):
+  - ai_decide_action, extract_user_content_only, analyze_complete_profile, batch extraction (_submit_llm_batch_request)
+  - analyzer functions (extract_text_from_image, analyze_dating_ui, find_ui_elements, analyze_profile_scroll_content, get_profile_navigation_strategy, detect_comment_ui_elements, verify_action_success, generate_comment)
+  - profile_eval in hinge_agent (currently uses the small model)
+- Large model (LLM_MODEL / OPENAI_MODEL / GEMINI_MODEL):
+  - opening_messages and opening_pick in the opener pipeline (via app/batch_payload.py; hinge_agent currently passes small for opening_messages and large for opening_pick)
+  - opening_style uses app/agent_config.py LLM_MODELS
+
 Architecture
 - Entry point: app/main_agent.py
   - Parses CLI flags, loads AgentConfig, and launches the orchestrator.

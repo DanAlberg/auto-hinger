@@ -1,6 +1,6 @@
 # app/analyzer.py
 # Facade that exposes analyzer functions with existing names.
-# Currently routes to OpenAI-backed implementations in analyzer_openai.py.
+# Currently routes to LLM-backed implementations in analyzer_openai.py.
 # This allows incremental migration without changing all call sites.
 
 from analyzer_openai import (

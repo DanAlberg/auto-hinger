@@ -138,6 +138,14 @@ class AgentConfig:
     ai_trace: bool = True
     ai_trace_log_dir: str = "logs"
 
+    # LLM provider + Gemini (Vertex) settings
+    llm_provider: str = "openai"  # "openai" | "gemini"
+    gemini_model: str = "gemini-2.5-pro"
+    gemini_small_model: str = "gemini-2.5-flash"
+    gemini_project_id: str = ""
+    gemini_location: str = ""
+    gemini_use_vertex: bool = False
+
     # Extraction models (LLM)
     extraction_model: str = "gpt-5"
     extraction_small_model: str = "gpt-5-mini"  # for small/logical tasks
@@ -197,7 +205,8 @@ FAST_CONFIG = AgentConfig(
 #   - opening_messages  → LLM2 (10 candidates)
 #   - opening_pick      → LLM3 (select the best)
 #
-# Change values to any of: "gpt-4.1", "gpt-4o", "gpt-5-mini", "gpt-5".
+# Change values to any of: "gpt-4.1", "gpt-4o", "gpt-5-mini", "gpt-5", "gpt-5.2".
+# If LLM_PROVIDER=gemini, you can set these to Gemini model ids directly.
 LLM_MODELS: Dict[str, str] = {
     "opening_style": "gpt-5-mini",
     "opening_messages": "gpt-5",
