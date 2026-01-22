@@ -30,7 +30,6 @@ from profile_export import ProfileExporter
 from profile_eval import evaluate_profile_fields, compute_profile_score
 from sqlite_store import update_profile_llm_metrics
 import hashlib
-from cv_biometrics import extract_biometrics_from_carousel
 
 
 class HingeAgentState(TypedDict):
@@ -905,32 +904,8 @@ class HingeAgent:
             except Exception:
                 pass
 
-            # CV+OCR biometrics extraction (horizontal row only)
+            # CV biometrics extraction deprecated; keep placeholder for downstream keys.
             cv_result = {}
-            if getattr(self.config, "use_cv_ocr_biometrics", True):
-                try:
-                    cv_result = extract_biometrics_from_carousel(
-                        device,
-                        start_screenshot=(sweep.get("image_used") or post_full_scroll),
-                        ocr_engine=str(getattr(self.config, "cv_ocr_engine", "easyocr")),
-                        max_micro_swipes=int(getattr(self.config, "max_horizontal_swipes", 8)),
-                        micro_swipe_ratio=float(getattr(self.config, "cv_micro_swipe_ratio", 0.25)),
-                        seek_swipe_ratio=float(getattr(self.config, "cv_seek_swipe_ratio", 0.60)),
-                        target_center_x_ratio=float(getattr(self.config, "cv_target_center_x_ratio", 0.38)),
-                        band_height_ratio=float(getattr(self.config, "cv_band_height_ratio", 0.06)),
-                        allow_edges_fallback=False,  # Y is known; no fallback
-                        verbose_timing=bool(getattr(self.config, "verbose_cv_timing", False)),
-                        y_override=int(y_horizontal),
-                    )
-                    try:
-                        self._debug(f"[CV_OCR] biometrics={cv_result.get('biometrics', {})}")
-                        if bool(getattr(self.config, "verbose_cv_timing", False)):
-                            self._debug(f"[CV_OCR] timing={cv_result.get('timing', {})}")
-                    except Exception:
-                        pass
-                except Exception as _e:
-                    print(f"❌ CV+OCR biometrics extraction failed: {_e}")
-                    cv_result = {}
             
             # Vertical paging collection until stable (image-dedup)
             t0_vp = time.perf_counter()
@@ -1056,15 +1031,6 @@ class HingeAgent:
                         json.dump(extracted_raw, f, indent=2)
                 except Exception as _e:
                     print(f"⚠️ Could not save raw LLM output: {_e}")
-                # Merge CV+OCR biometrics into extracted profile (CV takes precedence over LLM)
-                try:
-                    if getattr(self.config, "use_cv_ocr_biometrics", True) and isinstance(cv_result, dict):
-                        try:
-                            self._debug("[CV_OCR] Merged CV biometrics into extracted_profile (CV takes precedence).")
-                        except Exception:
-                            pass
-                except Exception as _me:
-                    print(f"⚠️ Merge biometrics failed: {_me}")
                 try:
                     self._debug("[AI JSON extracted_profile]")
                     self._debug(json.dumps(extracted_profile, indent=2)[:2000])
@@ -1129,8 +1095,6 @@ class HingeAgent:
                 "score_result": score_result,
                 "extraction_failed": extraction_failed,
                 "llm_batch_request": llm_payload,
-                "cv_biometrics": (cv_result.get("biometrics", {}) if isinstance(cv_result, dict) else {}),
-                "cv_biometrics_timing": (cv_result.get("timing", {}) if isinstance(cv_result, dict) else {}),
                 "llm_metrics": (state.get("llm_metrics", {}) if isinstance(state.get("llm_metrics", {}), dict) else {}),
                 "timings": timings,
                 "last_action": "analyze_profile",
@@ -2958,7 +2922,6 @@ class HingeAgent:
                         ("scan_total_ms", "scan_total"),
                         ("vertical_settle_scroll_ms", "vertical_settle_scroll"),
                         ("sweep_y_ms", "sweep_y"),
-                        ("horizontal_cv_ocr_ms", "horizontal_cv_ocr"),
                         ("vertical_paging_ms", "vertical_paging"),
                         ("payload_prep_ms", "payload_prep"),
                         ("extraction_llm_ms", "extraction_llm"),
@@ -3132,7 +3095,6 @@ class HingeAgent:
                     ("scan_total_ms", "scan_total"),
                     ("vertical_settle_scroll_ms", "vertical_settle_scroll"),
                     ("sweep_y_ms", "sweep_y"),
-                    ("horizontal_cv_ocr_ms", "horizontal_cv_ocr"),
                     ("vertical_paging_ms", "vertical_paging"),
                     ("payload_prep_ms", "payload_prep"),
                     ("extraction_llm_ms", "extraction_llm"),

@@ -1,5 +1,5 @@
 from helper_functions import capture_screenshot, swipe, get_screen_resolution
-from cv_biometrics import find_biometrics_band_y, extract_biometrics_from_carousel
+from cv_y_band import find_biometrics_band_y
 import time
 
 
@@ -26,10 +26,7 @@ def main():
         print("❌ Failed to detect Y-band after scrolling.")
         return
 
-    print("Running horizontal biometrics extraction...")
-    result = extract_biometrics_from_carousel(device, y_override=y_found)
-    print("✅ Extraction complete.")
-    print(result["biometrics"])
+    print("Y-band detected.")
 
 
 import shutil

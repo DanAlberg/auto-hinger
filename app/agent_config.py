@@ -59,16 +59,6 @@ class AgentConfig:
     horizontal_swipe_dx: tuple = (0.77, 0.23)  # start_x_percent, end_x_percent (10% shorter vs center)
     horizontal_swipe_duration_ms: int = 300    # faster horizontal swipe (2x speed)
     
-    # CV+OCR biometrics extraction (horizontal row)
-    use_cv_ocr_biometrics: bool = True
-    cv_ocr_engine: str = "easyocr"  # "easyocr" | "tesseract"
-    cv_band_height_ratio: float = 0.06
-    cv_micro_swipe_ratio: float = 0.12
-    cv_seek_swipe_ratio: float = 0.60
-    cv_target_center_x_ratio: float = 0.30
-    verbose_cv_timing: bool = True
-    ignore_zodiac: bool = True  # only store zodiac_listed boolean
-
     # LLM payload selection
     llm_exclude_horizontal: bool = True  # exclude horizontal carousel frames from LLM payload
     

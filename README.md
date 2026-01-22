@@ -85,7 +85,7 @@ Outputs
 
 Main flow (runtime)
 - Entry: app/main_agent.py → app/hinge_agent.py
-- Device/CV: app/helper_functions.py, app/cv_biometrics.py, app/assets/
+- Device/CV: app/helper_functions.py, app/cv_y_band.py, app/assets/
 - LLM: app/analyzer.py → app/analyzer_openai.py + app/llm_client.py
 - Prompting/scoring: app/prompt_engine.py, app/profile_eval.py, app/batch_payload.py
 - Storage/export: app/sqlite_store.py, app/data_store.py, app/profile_export.py, app/text_utils.py
