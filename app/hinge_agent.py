@@ -1395,8 +1395,8 @@ class HingeAgent:
         for i in range(1, max_pages + 1):
             self._debug(f"📜 Vertical page {i}/{max_pages}")
             sx = int(width * float(getattr(self.config, "vertical_swipe_x_pct", 0.12)))
-            sy1 = int(height * 0.75)
-            sy2 = int(height * 0.25)
+            sy1 = int(height * 0.725)
+            sy2 = int(height * 0.275)
             self._vertical_swipe_px(state, sx, sy1, sy2, duration_ms=int(getattr(self.config, "vertical_swipe_duration_ms", 1200)))
             time.sleep(2)
             shot = capture_screenshot(device, f"profile_{state['current_profile_index']}_vpage_{i}")
