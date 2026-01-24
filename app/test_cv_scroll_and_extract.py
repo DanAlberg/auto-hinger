@@ -1,5 +1,5 @@
 from helper_functions import capture_screenshot, swipe, get_screen_resolution
-from cv_y_band import find_biometrics_band_y
+from cv_biometrics import find_biometrics_band_y
 import time
 
 

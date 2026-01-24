@@ -69,7 +69,7 @@ class AgentConfig:
     age_icon_use_edges: bool = True              # use Canny edges during matching
     age_icon_templates: tuple = ("assets/icon_age.png", "assets/icon_gender.png", "assets/icon_height.png")  # templates to use for age-row detection (2-of-3)
     age_dual_y_tolerance_px: int = 5             # absolute pixel tolerance for age/gender Y alignment
-    age_dual_y_tolerance_ratio: float = 0.005    # relative tolerance (fraction of image height)
+    age_dual_y_tolerance_ratio: float = 0.01     # relative tolerance (fraction of image height)
     require_both_icons_for_y: bool = True        # require both icons and average their Y when close
     icon_expected_px: int = 60               # expected on-screen icon height in pixels
     icon_scale_tolerance: float = 0.30       # +/- percentage around expected scale

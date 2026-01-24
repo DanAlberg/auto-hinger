@@ -30,6 +30,7 @@ from profile_export import ProfileExporter
 from profile_eval import evaluate_profile_fields, compute_profile_score
 from sqlite_store import update_profile_llm_metrics
 import hashlib
+from cv_biometrics import extract_biometrics_from_carousel
 
 
 class HingeAgentState(TypedDict):
@@ -898,14 +899,29 @@ class HingeAgent:
                     "errors_encountered": state.get("errors_encountered", 0) + 1
                 }
             
-            # Skip upstream horizontal stabilization; start CV immediately after Y
-            try:
-                self._debug("⛔ Skipping pre-swipe; starting CV loop immediately.")
-            except Exception:
-                pass
-
-            # CV biometrics extraction deprecated; keep placeholder for downstream keys.
+            # CV: stitch horizontal carousel band for biometrics row
             cv_result = {}
+            try:
+                t0_hs = time.perf_counter()
+                cv_result = extract_biometrics_from_carousel(
+                    device,
+                    start_screenshot=(sweep.get("image_used") or post_full_scroll),
+                    max_micro_swipes=int(getattr(self.config, "max_horizontal_swipes", 8)),
+                    y_override=int(y_horizontal),
+                )
+                try:
+                    timings["horizontal_stitch_ms"] = int((time.perf_counter() - t0_hs) * 1000)
+                except Exception:
+                    pass
+                try:
+                    stitched_path = cv_result.get("stitched_carousel") if isinstance(cv_result, dict) else None
+                    if stitched_path:
+                        self._debug(f"🧩 Stitched carousel generated: {stitched_path}")
+                except Exception:
+                    pass
+            except Exception as _e:
+                print(f"❌ Stitched carousel generation failed: {_e}")
+                cv_result = {}
             
             # Vertical paging collection until stable (image-dedup)
             t0_vp = time.perf_counter()
