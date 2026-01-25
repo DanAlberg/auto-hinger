@@ -91,7 +91,8 @@ def LLM1() -> str:
         '      "Grooming Effort Level": "",\n'
         '      "Presentation Red Flags": "",\n'
         '      "Visible Tattoo Level": "",\n'
-        '      "Visible Piercing Level": ""\n'
+        '      "Visible Piercing Level": "",\n'
+        '      "Short-Term / Hookup Orientation Signals": ""\n'
         '    }\n'
         '  }\n'
         "}\n\n"
@@ -148,7 +149,7 @@ def LLM1() -> str:
         '"Visible Enhancements or Features": Pick any that apply (comma-separated): "None visible", "Glasses", "Sunglasses", "Makeup (light)", "Makeup (heavy)", "Jewelry", "Painted nails", "Very long nails (2cm+)", "Hair extensions/wig (obvious)", "False eyelashes (obvious)", "Hat/cap/beanie (worn in most photos)"\n\n'
         '"Apparent Upper Body Proportions": One of: "Petite/small/narrow", "Average/balanced/proportional", "Defined/toned", "Full/curvy", "Prominent/voluptuous", "Broad/strong"\n\n'
         '"Apparent Attractiveness Tier": One of: "Very unattractive/morbidly obese", "Low", "Average", "Above average", "High", "Very attractive", "Extremely attractive", "Supermodel"\n\n'
-        '"Apparent Attractiveness Tier (CRITICAL - CONSERVATIVE SCORING REQUIRED)": Default to "Average". This is a mainstream/common-judgment rating. If uncertain between two tiers, ALWAYS choose the LOWER tier. If "Face Visibility Quality" is NOT "Clear face in 3+ photos", do NOT output tiers ABOVE "Above average". For tiers ABOVE "Average", require clear evidence across multiple photos; do not promote based on vibes, style, or distinctiveness alone. If multiple clear limiting factors are present, do not avoid using "Low" or "Very unattractive/morbidly obese". Use "Supermodel" only in extremely rare cases where the subject clearly stands out far above typical dating-app profiles across multiple photos (exceptional facial symmetry, consistently flattering angles/lighting, and polished grooming).\n\n'
+        '"Apparent Attractiveness Tier (CRITICAL - CONSERVATIVE SCORING REQUIRED)": Default to "Average". This is a mainstream/common-judgment rating. If uncertain between two tiers, ALWAYS choose the LOWER tier. If "Face Visibility Quality" is NOT "Clear face in 3+ photos", do NOT output tiers ABOVE "Above average". For tiers ABOVE "Average", require clear evidence across multiple photos; do not promote based on vibes, style, or distinctiveness alone. If multiple clear limiting factors are present, do not avoid using "Low" or "Very unattractive/morbidly obese". Use "Supermodel" only in extremely rare cases where the subject clearly stands out far above typical dating-app profiles across multiple photos (exceptional facial symmetry, consistently flattering angles/lighting, and polished grooming). This rating must reflect mainstream Western heterosexual dating-app standards for women. To be rated ABOVE "Average", the subject should broadly fit common feminine beauty norms in facial structure, body proportions, and overall presentation; profiles that significantly diverge from these norms should not be rated above "Average" regardless of styling, grooming, or effort.\n\n'
         '"Reasoning for attractiveness tier": Provide ONE concise sentence listing observable factors. Requirements by tier: if tier is ABOVE "Average", include at least 1 clear positive AND 1 clear limiting factor; if tier is "Average", include at least 1 positive AND 1 limiting factor; if tier is "Low" or "Very unattractive/morbidly obese", include 2 or more limiting factors (positives optional). Avoid vague words.\n\n'
         '"Facial Symmetry Level (CONSERVATIVE)": Default to "Moderate". Use "High" or "Very high" only when symmetry is clearly and consistently strong across multiple photos. Do NOT infer symmetry from grooming or styling.\n\n'
         '"Apparent Age Range Category (IMPORTANT - VISUAL ONLY)": This field must be based ONLY on facial appearance in the photos. Do NOT reconcile or align with the stated age. Disagreement is expected and desirable. If uncertain between adjacent age ranges, ALWAYS choose the OLDER range. Overestimating apparent age is preferred to underestimating it.\n\n'
@@ -157,7 +158,9 @@ def LLM1() -> str:
         '"Presentation Red Flags": Pick any that apply (comma-separated): "None", "Poor lighting", "Blurry/low resolution", "Unflattering angle", "Heavy filters/face smoothing", "Sunglasses in most photos", "Face mostly obscured", "Group photos unclear who is the subject", "Too many distant shots", "Mirror selfie cluttered", "Messy background", "Only one clear solo photo", "Awkward cropping", "Overexposed/washed out", "Inconsistent appearance across photos", "Entitlement language in prompts", "Transactional dating expectations stated explicitly", "Rigid gender role expectations stated explicitly", "Aggressive negativity in prompts", "Excessive rules or dealbreakers listed", "Hostile or contemptuous humor in prompts", "Passive-aggressive tone in prompts", "Explicit materialism or status demands"\n\n'
         '"Visible Tattoo Level": One of: "None visible", "Small/minimal", "Moderate", "High"\n\n'
         '"Visible Piercing Level": One of: "None visible", "Minimal", "Moderate", "High"\n'
-        'Rule (piercings): "Minimal" = ONLY standard single earlobe earrings. ANY septum/nose/eyebrow/lip or multiple ear piercings MUST be "Moderate" or "High". If uncertain between adjacent levels, choose the HIGHER level.\n\n'
+        '"Rule (piercings): "Minimal" = ONLY standard single earlobe earrings. ANY septum/nose/eyebrow/lip or multiple ear piercings MUST be "Moderate" or "High". If uncertain between adjacent levels, choose the HIGHER level."\n\n'
+        '"Short-Term / Hookup Orientation Signals": One of: "None evident", "Low", "Moderate", "High"\n\n'
+        '"Short-Term / Hookup Orientation Signalling": Assess whether the profile signals casual sexual openness based on a combination of visual AND textual cues, including repeated suggestive attire or poses, sexually loaded prompt answers or innuendo, emphasis on physical touch, flirtatious framing, or body-forward presentation. Subtle but consistent signals across the profile should be rated "Moderate" rather than "Low".'
     )
 
 
@@ -371,10 +374,6 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     if dating_norm == _norm_value("Life partner"):
         record("Core Biometrics", "Dating Intentions", dating, -5)
 
-    drinking = core_val("Drinking")
-    if _norm_value(drinking) == _norm_value("Sometimes"):
-        record("Core Biometrics", "Drinking", drinking, +5)
-
     smoking = core_val("Smoking")
     smoking_norm = _norm_value(smoking)
     if smoking_norm == _norm_value("Yes"):
@@ -417,15 +416,6 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
         record("Core Biometrics", "Religious Beliefs", religion, -1000)
     elif religion_norm:
         record("Core Biometrics", "Religious Beliefs", religion, -10)
-
-    politics = core_val("Politics")
-    politics_norm = _norm_value(politics)
-    if politics_norm == _norm_value("Conservative"):
-        record("Core Biometrics", "Politics", politics, +5)
-    elif politics_norm == _norm_value("Not political"):
-        record("Core Biometrics", "Politics", politics, +5)
-    elif politics_norm == _norm_value("Liberal"):
-        record("Core Biometrics", "Politics", politics, -5)
 
     # Age weighting (declared age only)
     declared_age = core_val("Age")
@@ -526,6 +516,11 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
             distinctiveness,
             distinctiveness_deltas[distinctiveness_norm],
         )
+
+    short_term = visual_val("Short-Term / Hookup Orientation Signals")
+    short_term_norm = _norm_value(short_term)
+    if short_term_norm == _norm_value("High"):
+        record("Visual Analysis", "Short-Term / Hookup Orientation Signals", short_term, -5)
 
     attractiveness = visual_val("Apparent Attractiveness Tier")
     attractiveness_norm = _norm_value(attractiveness)
@@ -797,9 +792,11 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     politics = core_val("Politics")
     politics_norm = _norm_value(politics)
     if politics_norm == _norm_value("Conservative"):
-        record("Core Biometrics", "Politics", politics, +5)
+        record("Core Biometrics", "Politics", politics, +10)
     elif politics_norm == _norm_value("Not political"):
-        record("Core Biometrics", "Politics", politics, +5)
+        record("Core Biometrics", "Politics", politics, +10)
+    elif politics_norm == _norm_value("Moderate"):
+        record("Core Biometrics", "Politics", politics, +10)
     elif politics_norm == _norm_value("Liberal"):
         record("Core Biometrics", "Politics", politics, -5)
 
@@ -895,14 +892,58 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
             distinctiveness_deltas[distinctiveness_norm],
         )
 
+    overall_vibe = visual_val("Overall Visual Appeal Vibe")
+    overall_vibe_norm = _norm_value(overall_vibe)
+    if overall_vibe_norm in {
+        _norm_value("Playful/flirty"),
+        _norm_value("Sensual/alluring"),
+    }:
+        record("Visual Analysis", "Overall Visual Appeal Vibe", overall_vibe, +5)
+    elif overall_vibe_norm == _norm_value("Very low-key/understated"):
+        record("Visual Analysis", "Overall Visual Appeal Vibe", overall_vibe, -5)
+
     attire = visual_val("Attire and Style Indicators")
     attire_norm = _norm_value(attire)
-    if attire_norm in {
+    if attire_norm == _norm_value("Very modest/covered"):
+        record("Visual Analysis", "Attire and Style Indicators", attire, -10)
+    elif attire_norm in {
         _norm_value("Form-fitting/suggestive"),
         _norm_value("Highly revealing"),
         _norm_value("Edgy/alternative"),
     }:
-        record("Visual Analysis", "Attire and Style Indicators", attire, +20)
+        record("Visual Analysis", "Attire and Style Indicators", attire, +10)
+
+    body_language = visual_val("Body Language and Expression")
+    body_language_norm = _norm_value(body_language)
+    if body_language_norm in {
+        _norm_value("Confident/engaging"),
+        _norm_value("Playful/flirty"),
+    }:
+        record("Visual Analysis", "Body Language and Expression", body_language, +5)
+
+    fitness = _split_csv(visual_val("Indicators of Fitness or Lifestyle"))
+    for item in fitness:
+        item_norm = _norm_value(item)
+        if item_norm in {
+            _norm_value("Visible muscle tone"),
+            _norm_value("Athletic poses"),
+        }:
+            record("Visual Analysis", "Indicators of Fitness or Lifestyle", item, +10)
+
+    short_term = visual_val("Short-Term / Hookup Orientation Signals")
+    short_term_norm = _norm_value(short_term)
+    short_term_deltas = {
+        _norm_value("Low"): 5,
+        _norm_value("Moderate"): 10,
+        _norm_value("High"): 15,
+    }
+    if short_term_norm in short_term_deltas:
+        record(
+            "Visual Analysis",
+            "Short-Term / Hookup Orientation Signals",
+            short_term,
+            short_term_deltas[short_term_norm],
+        )
 
     attractiveness = visual_val("Apparent Attractiveness Tier")
     attractiveness_norm = _norm_value(attractiveness)
@@ -1000,6 +1041,10 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
         if flag_norm == _norm_value("Heavy filters/face smoothing") and photo_editing_norm == _norm_value("Heavy filters/face smoothing"):
             continue
         record("Visual Analysis", "Presentation Red Flags", flag, -5)
+
+    grooming = visual_val("Grooming Effort Level")
+    if _norm_value(grooming) == _norm_value("Minimal/natural"):
+        record("Visual Analysis", "Grooming Effort Level", grooming, -5)
 
     # Profile Evaluation (LLM2)
     job_band = _norm_value((eval_result.get("job") or {}).get("band", ""))

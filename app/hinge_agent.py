@@ -1310,8 +1310,9 @@ class HingeAgent:
                 break
 
             sx = int(width * float(getattr(cfg, "vertical_swipe_x_pct", 0.12)))
-            sy1 = int(height * 0.80)
-            sy2 = int(height * 0.20)
+            # Slightly shorter sweep scrolls to avoid overshooting biometrics row pre-detection.
+            sy1 = int(height * 0.703)
+            sy2 = int(height * 0.298)
             self._vertical_swipe_px(state, sx, sy1, sy2, duration_ms=int(getattr(cfg, "vertical_swipe_duration_ms", 1200)))
             time.sleep(1.6)
             shot = capture_screenshot(device, f"icon_sweep_{state['current_profile_index']}_{pages+1}")
