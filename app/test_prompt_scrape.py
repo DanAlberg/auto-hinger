@@ -780,7 +780,7 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     dating = core_val("Dating Intentions")
     dating_norm = _norm_value(dating)
     if dating_norm == _norm_value("Life partner"):
-        record("Core Biometrics", "Dating Intentions", dating, -5)
+        record("Core Biometrics", "Dating Intentions", dating, -20)
 
     smoking = core_val("Smoking")
     smoking_norm = _norm_value(smoking)
@@ -1487,6 +1487,22 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     }
 
 
+def _classify_preference_flag(
+    long_score: int,
+    short_score: int,
+    t_long: int = 15,
+    t_short: int = 20,
+    dominance_margin: int = 10,
+) -> str:
+    long_excess = long_score - t_long
+    short_excess = short_score - t_short
+    if long_score >= t_long and long_excess >= short_excess + dominance_margin:
+        return "LONG"
+    if short_score >= t_short and short_excess >= long_excess + dominance_margin:
+        return "SHORT"
+    return "NONE"
+
+
 def _format_score_table(label: str, score_result: Dict[str, Any]) -> str:
     contribs = score_result.get("contributions", []) if isinstance(score_result, dict) else []
     signals = (score_result.get("signals", {}) if isinstance(score_result, dict) else {}) or {}
@@ -1808,6 +1824,16 @@ def main() -> int:
         print(f"Wrote score table to {table_path}")
     except Exception as e:
         print(f"Failed to write results: {e}")
+
+    long_score = long_score_result.get("score", 0) if isinstance(long_score_result, dict) else 0
+    short_score = short_score_result.get("score", 0) if isinstance(short_score_result, dict) else 0
+    preference_flag = _classify_preference_flag(long_score, short_score)
+    print("\n=== Preference Flag ===")
+    print(
+        f"classification={preference_flag} "
+        f"(long_score={long_score}, short_score={short_score}, "
+        "t_long=15, t_short=20, dominance_margin=10)"
+    )
 
     # TEMP: manual preference logging (remove after tuning)
     # Commented out for now to avoid interactive prompts during test runs.
