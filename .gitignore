@@ -7,6 +7,7 @@ app/generated_comments.json
 *.venv
 *.DS_Store
 app/images/*.png
+hinge_ui.xml
 # Logs and outputs
 app/logs/
 app/logs/*.log

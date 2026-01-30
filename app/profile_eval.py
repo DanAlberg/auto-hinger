@@ -82,7 +82,7 @@ NUKE_SCORE = -99
 LIKE_THRESHOLD = 3  # 3+ = LIKE, 2- = DISLIKE
 
 SHORT_TERM_SET = {
-    "Short term relationship",
+    "Short-term relationship",
     "Short-term relationship, open to long",
 }
 
@@ -212,7 +212,7 @@ def _score_profile(extracted: Dict[str, Any], enrichment: Dict[str, Any]) -> Dic
 
     # Dating Intentions
     di = _val(extracted, "Dating Intentions", "")
-    if di == "Short term relationship":
+    if di == "Short-term relationship":
         score += 2
         _add(contribs, "Dating Intentions", di, +2)
     elif di == "Short-term relationship, open to long":

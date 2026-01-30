@@ -25,7 +25,6 @@ from analyzer import (
 )
 from batch_payload import build_llm_batch_payload, build_profile_prompt, run_opening_style, run_opening_messages, run_opening_pick
 from data_store import store_generated_comment, calculate_template_success_rates
-from prompt_engine import update_template_weights
 from profile_export import ProfileExporter
 from profile_eval import evaluate_profile_fields, compute_profile_score
 from sqlite_store import update_profile_llm_metrics
@@ -419,10 +418,6 @@ class HingeAgent:
 
         # Startup pre-check removed for current LIKE-less flow
 
-        # Update template weights
-        success_rates = calculate_template_success_rates()
-        update_template_weights(success_rates)
-        
         print(f"✅ Session initialized - Device: {device.serial}, Resolution: {width}x{height}")
         
         return {
@@ -1036,7 +1031,9 @@ class HingeAgent:
                 # Validate required top-level keys presence (values may be null)
                 missing_after = self._validate_required_fields(extracted_raw)
                 if missing_after:
-                    print(f"⚠️ Extraction missing required keys after retry: {', '.join(missing_after)}")
+                    # TODO: When merging the new nested extraction schema, update required-key validation to match it.
+                    if os.getenv("HINGE_SHOW_EXTRACTION_WARNINGS", "1") == "1":
+                        print(f"⚠️ Extraction missing required keys after retry: {', '.join(missing_after)}")
                     extraction_failed = True
                 # Use raw LLM output directly (no normalization)
                 extracted_profile = extracted_raw
@@ -3305,7 +3302,6 @@ class HingeAgent:
         
         # Update final success rates
         final_success_rates = calculate_template_success_rates()
-        update_template_weights(final_success_rates)
         
         completion_reason = state.get("completion_reason", "Session completed")
         if state["current_profile_index"] >= state["max_profiles"]:

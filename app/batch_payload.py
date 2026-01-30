@@ -62,7 +62,7 @@ def build_profile_prompt() -> str:
         "  • Children: 'Don't have children', 'Have children'\n"
         "  • Family plans: 'Don't want children', 'Want children', 'Not sure yet'\n"
         "  • Covid Vaccine: 'Vaccinated', 'Partially vaccinated', 'Not yet vaccinated'\n"
-        "  • Dating Intentions: 'Life partner', 'Long-term relationship', 'Long-term relationship, open to short', 'Short-term relationship, open to long', 'Short term relationship', 'Figuring out my dating goals'\n"
+        "  • Dating Intentions: 'Life partner', 'Long-term relationship', 'Long-term relationship, open to short', 'Short-term relationship, open to long', 'Short-term relationship', 'Figuring out my dating goals'\n"
         "  • Relationship type: 'Monogamy', 'Non-Monogamy', 'Figuring out my relationship type'\n"
         "- For tri-state lifestyle fields (Drinking, Smoking, Marijuana, Drugs), only use 'Yes', 'Sometimes', or 'No'.\n"
         "- For 'Profile Prompts and Answers', extract up to three visible prompt/answer pairs.\n"

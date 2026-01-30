@@ -16,4 +16,5 @@ dependencies = [
     "python-dotenv>=1.1.1",
     "openai>=1.40.0",
     "pandas>=2.2.0",
+    "pytesseract>=0.3.13",
 ]

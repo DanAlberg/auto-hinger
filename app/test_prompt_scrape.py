@@ -16,12 +16,30 @@ import config  # ensure .env is loaded early via config.py
 import prompt_engine
 import hinge_agent as ha
 from agent_config import DEFAULT_CONFIG
+from helper_functions import (
+    ensure_adb_running,
+    capture_screenshot,
+    swipe,
+    tap,
+    detect_like_button_cv,
+    are_images_similar,
+    are_images_similar_roi,
+)
 from hinge_agent import HingeAgent, HingeAgentState
 from llm_client import get_default_model, get_llm_client, resolve_model
 from text_utils import normalize_dashes
 
 
-def LLM1() -> str:
+def LLM1(image_paths: List[str] | None = None) -> str:
+    image_list_block = ""
+    if image_paths:
+        basenames = [os.path.basename(p) for p in image_paths if isinstance(p, str)]
+        if basenames:
+            image_list_block = (
+                "\nAvailable vertical page screenshots (use these for source_file):\n- "
+                + "\n- ".join(basenames)
+                + "\n\n"
+            )
     return (
         "You are analyzing screenshots from a Hinge dating profile. Extract information strictly from visible text for explicit fields (especially the stitched biometrics cards with icons). For photo descriptions and inferred traits, provide neutral, factual observations from images only. Do not guess, judge, moralize, or infer personality or behavior beyond what is explicitly visible in images or written text.\n\n"
         "Return exactly one valid JSON object matching this structure, with the same field names, order, and formatting:\n\n"
@@ -54,18 +72,29 @@ def LLM1() -> str:
         '  },\n'
         '  "Profile Content (Free Description)": {\n'
         '    "Profile Prompts and Answers": [\n'
-        '      {"prompt": "", "answer": ""},\n'
-        '      {"prompt": "", "answer": ""},\n'
-        '      {"prompt": "", "answer": ""}\n'
+        '      {"id": "prompt_1", "prompt": "", "answer": "", "source_file": "", "page_half": ""},\n'
+        '      {"id": "prompt_2", "prompt": "", "answer": "", "source_file": "", "page_half": ""},\n'
+        '      {"id": "prompt_3", "prompt": "", "answer": "", "source_file": "", "page_half": ""}\n'
         '    ],\n'
+        '    "Poll (optional, most profiles will not have this)": {\n'
+        '      "id": "poll_1",\n'
+        '      "question": "",\n'
+        '      "source_file": "",\n'
+        '      "page_half": "",\n'
+        '      "answers": [\n'
+        '        {"id": "poll_1_a", "text": ""},\n'
+        '        {"id": "poll_1_b", "text": ""},\n'
+        '        {"id": "poll_1_c", "text": ""}\n'
+        '      ]\n'
+        '    },\n'
         '    "Other text on profile not covered by above": "",\n'
-        '    "Description of any non-photo media (e.g., video (identified via timestamp in top right), poll, voice note)": "",\n'
-        '    "Extensive Description of Photo 1": "",\n'
-        '    "Extensive Description of Photo 2": "",\n'
-        '    "Extensive Description of Photo 3": "",\n'
-        '    "Extensive Description of Photo 4": "",\n'
-        '    "Extensive Description of Photo 5": "",\n'
-        '    "Extensive Description of Photo 6": ""\n'
+        '    "Description of any non-photo media (e.g., video (identified via timestamp in top right), voice note)": "",\n'
+        '    "Extensive Description of Photo 1": {"id": "photo_1", "description": "", "source_file": "", "page_half": ""},\n'
+        '    "Extensive Description of Photo 2": {"id": "photo_2", "description": "", "source_file": "", "page_half": ""},\n'
+        '    "Extensive Description of Photo 3": {"id": "photo_3", "description": "", "source_file": "", "page_half": ""},\n'
+        '    "Extensive Description of Photo 4": {"id": "photo_4", "description": "", "source_file": "", "page_half": ""},\n'
+        '    "Extensive Description of Photo 5": {"id": "photo_5", "description": "", "source_file": "", "page_half": ""},\n'
+        '    "Extensive Description of Photo 6": {"id": "photo_6", "description": "", "source_file": "", "page_half": ""}\n'
         '  },\n'
         '  "Visual Analysis (Inferred From Images)": {\n'
         '    "Inferred Visual Traits Summary": {\n'
@@ -112,6 +141,11 @@ def LLM1() -> str:
         "- These keys must always exist in the output JSON.\n"
         "- Use short, literal transcriptions or descriptions of what is visibly present (prompts and answers, other visible profile text, and any non-photo media).\n"
         "- If an item is not present, leave the value as an empty string.\n\n"
+        "2b) Target IDs (for downstream LLMs):\n"
+        "- Include IDs directly inside prompts, poll, and photo description objects.\n"
+        "- IDs must be exactly: prompt_1..prompt_3, photo_1..photo_6, poll_1, poll_1_a, poll_1_b, poll_1_c.\n"
+        "- For prompts, polls, and photos, include source_file (must be one of the vertical page screenshot filenames provided) and page_half (must be exactly \"top\" or \"bottom\").\n"
+        "- If no poll is present, still include poll_1 with empty question/answers.\n\n"
         "3) Visual Analysis (Inferred From Images):\n"
         "- Base solely on photo visuals.\n"
         "- Do not use any values from Core Biometrics (Objective) to fill or influence Visual Analysis fields.\n"
@@ -123,7 +157,7 @@ def LLM1() -> str:
         '- "Children": "Don\'t have children", "Have children".\n'
         '- "Family plans": "Don\'t want children", "Want children", "Open to children", "Not sure yet".\n'
         '- "Covid Vaccine": "Vaccinated", "Partially vaccinated", "Not yet vaccinated".\n'
-        '- "Dating Intentions": "Life partner", "Long-term relationship", "Long-term relationship, open to short", "Short-term relationship, open to long", "Short term relationship", "Figuring out my dating goals".\n'
+        '- "Dating Intentions": "Life partner", "Long-term relationship", "Long-term relationship, open to short", "Short-term relationship, open to long", "Short-term relationship", "Figuring out my dating goals".\n'
         '- "Relationship type": "Monogamy", "Non-Monogamy", "Figuring out my relationship type".\n'
         '- "Drinking": "Yes", "Sometimes", "No".\n'
         '- "Smoking": "Yes", "Sometimes", "No".\n'
@@ -156,12 +190,13 @@ def LLM1() -> str:
         '"Facial Proportion Balance": One of: "Balanced/proportional", "Slightly unbalanced", "Noticeably unbalanced"\n\n'
         '"Grooming Effort Level": One of: "Minimal/natural", "Moderate/casual", "High/polished", "Heavy/overdone"\n\n'
         '"Presentation Red Flags": Pick any that apply (comma-separated): "None", "Poor lighting", "Blurry/low resolution", "Unflattering angle", "Heavy filters/face smoothing", "Sunglasses in most photos", "Face mostly obscured", "Group photos unclear who is the subject", "Too many distant shots", "Mirror selfie cluttered", "Messy background", "Only one clear solo photo", "Awkward cropping", "Overexposed/washed out", "Inconsistent appearance across photos", "Entitlement language in prompts", "Transactional dating expectations stated explicitly", "Rigid gender role expectations stated explicitly", "Aggressive negativity in prompts", "Excessive rules or dealbreakers listed", "Hostile or contemptuous humor in prompts", "Passive-aggressive tone in prompts", "Explicit materialism or status demands"\n\n'
+        '"Red Flags Notes: This must appear in most or all pictures to be red flagged. One or two group photos or filtered photos out of 6 is acceptable. 4 or 5 is not.'
         '"Visible Tattoo Level": One of: "None visible", "Small/minimal", "Moderate", "High"\n\n'
         '"Visible Piercing Level": One of: "None visible", "Minimal", "Moderate", "High"\n'
         '"Rule (piercings): "Minimal" = ONLY standard single earlobe earrings. ANY septum/nose/eyebrow/lip or multiple ear piercings MUST be "Moderate" or "High". If uncertain between adjacent levels, choose the HIGHER level."\n\n'
         '"Short-Term / Hookup Orientation Signals": One of: "None evident", "Low", "Moderate", "High"\n\n'
         '"Short-Term / Hookup Orientation Signalling": Assess whether the profile signals casual sexual openness based on a combination of visual AND textual cues, including repeated suggestive attire or poses, sexually loaded prompt answers or innuendo, emphasis on physical touch, flirtatious framing, or body-forward presentation. Subtle but consistent signals across the profile should be rated "Moderate" rather than "Low".'
-    )
+    ) + image_list_block
 
 
 
@@ -229,6 +264,89 @@ def LLM2(home_town: str, job_title: str, university: str) -> str:
         "}\n",
     ]
     return "".join(parts)
+
+
+def LLM3_LONG(extracted: Dict[str, Any]) -> str:
+    extracted_json = json.dumps(extracted or {}, ensure_ascii=False, indent=2)
+    return (
+        "You are generating opening messages for Hinge.\n"
+        "These should be warm, natural, and genuinely curious questions — the kind of thing a normal attractive guy would send.\n"
+        "The goal is to start an easy conversation.\n\n"
+        "Profile details:\n"
+        f"{extracted_json}\n\n"
+        "Task: Generate exactly 10 DISTINCT opening messages as JSON.\n\n"
+        "Rules:\n"
+        "- Output JSON only, no extra text.\n"
+        "- Each opener must anchor to EXACTLY ONE profile element ID: prompt_1..prompt_3, photo_1..photo_6, poll_1_a|poll_1_b|poll_1_c.\n"
+        "- Every opener must be a simple question (or light A/B choice) that is easy to reply to.\n"
+        "- Keep it sweet, and either curious or flirty\n"
+        "- Do NOT narrate the photo like a caption. Reference it naturally (\"where was this?\" not \"in photo 3\"). The text will be linked to the photo by the user, using the index supplied.\n"
+        "- Avoid generic compliments like \"you’re stunning\".\n"
+        "- Avoid forced jokes, try-hard banter, or anything that sounds scripted.\n"
+        "- Messages should feel human, relaxed, and effortless. Don't overly specify - i.e. \"you look amazing in that red fabric dress\" vs \"you look amazing in that dress\". \n\n"
+        "Output format (JSON only):\n"
+        "{\n"
+        '  "openers": [\n'
+        "    {\n"
+        '      "text": \"...\",\n'
+        '      "main_target_type": \"prompt|photo|poll\",\n'
+        '      "main_target_id": \"prompt_1\",\n'
+        '      "hook_basis": \"short internal note on what you targeted\"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+    )
+
+
+
+def LLM3_SHORT(extracted: Dict[str, Any]) -> str:
+    extracted_json = json.dumps(extracted or {}, ensure_ascii=False, indent=2)
+    return (
+        "You are generating opening messages for Hinge.\n"
+        "These should be confident, flirty, and optionally sexually charged when the profile vibe supports it.\n"
+        "The goal is to create immediate chemistry and get a reply.\n\n"
+        "Profile details:\n"
+        f"{extracted_json}\n\n"
+        "Task: Generate exactly 10 DISTINCT opening messages as JSON.\n\n"
+        "Rules:\n"
+        "- Output JSON only, no extra text.\n"
+        "- Each opener must anchor to EXACTLY ONE profile element ID: prompt_1..prompt_3, photo_1..photo_6, poll_1_a|poll_1_b|poll_1_c.\n"
+        "- Every opener must be a question (or light A/B choice) that is easy to reply to.\n"
+        "- Keep it bold, playful, and flirty. If the profile signals a spicy vibe, add sexual tension or innuendo.\n"
+        "- Do NOT narrate the photo like a caption. Reference it naturally (\"where was this?\" not \"in photo 3\"). The text will be linked to the photo by the user, using the index supplied.\n"
+        "- Avoid generic compliments like \"you’re stunning\".\n"
+        "- Avoid try-hard banter, forced jokes, or anything that sounds scripted.\n"
+        "- Keep it human and natural, not verbose.\n"
+        "Output format (JSON only):\n"
+        "{\n"
+        '  "openers": [\n'
+        "    {\n"
+        '      "text": \"...\",\n'
+        '      "main_target_type": \"prompt|photo|poll\",\n'
+        '      "main_target_id": \"prompt_1\",\n'
+        '      "hook_basis": \"short internal note on what you targeted\"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+    )
+
+def LLM4(openers_json: Dict[str, Any]) -> str:
+    openers_str = json.dumps(openers_json or {}, ensure_ascii=False, indent=2)
+    return (
+        "You are selecting the single best Hinge opener from a provided list.\n"
+        "Pick the one most likely to get a reply. Be decisive.\n\n"
+        "Openers JSON:\n"
+        f"{openers_str}\n\n"
+        "Output JSON only:\n"
+        "{\n"
+        '  "chosen_index": 0,\n'
+        '  "chosen_text": "",\n'
+        '  "main_target_type": "prompt|photo|poll",\n'
+        '  "main_target_id": "",\n'
+        '  "rationale": ""\n'
+        "}\n"
+    )
+
 
 
 def _default_profile_eval() -> Dict[str, Any]:
@@ -309,6 +427,295 @@ def run_profile_eval_llm(extracted: Dict[str, Any], model: str | None = None) ->
         return _default_profile_eval()
 
 
+def run_llm3_long(extracted: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
+    prompt = LLM3_LONG(extracted)
+    requested_model = model or get_default_model()
+    resolved_model = resolve_model(requested_model)
+    try:
+        resp = get_llm_client().chat.completions.create(
+            model=resolved_model,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.choices[0].message.content or "{}"
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
+    prompt = LLM3_SHORT(extracted)
+    requested_model = model or get_default_model()
+    resolved_model = resolve_model(requested_model)
+    try:
+        resp = get_llm_client().chat.completions.create(
+            model=resolved_model,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.choices[0].message.content or "{}"
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def run_llm4(openers_json: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
+    prompt = LLM4(openers_json)
+    requested_model = model or get_default_model()
+    resolved_model = resolve_model(requested_model)
+    try:
+        resp = get_llm_client().chat.completions.create(
+            model=resolved_model,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.choices[0].message.content or "{}"
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _resolve_source_file(source_file: str, images_paths: List[str]) -> str:
+    if not source_file:
+        return ""
+    src = str(source_file).strip()
+    if not src:
+        return ""
+    # If absolute path exists, keep it.
+    if os.path.exists(src):
+        return os.path.abspath(src)
+    # Try basename match against known images paths.
+    base = os.path.basename(src)
+    for p in images_paths or []:
+        if os.path.basename(str(p)) == base:
+            return os.path.abspath(p)
+    # Heuristic: "page_3_top.png" -> vpage_3
+    import re
+    m = re.search(r"page[_-]?(\d+)", base, re.IGNORECASE)
+    if m:
+        idx = m.group(1)
+        for p in images_paths or []:
+            if f"_vpage_{idx}.png" in str(p):
+                return os.path.abspath(p)
+    return ""
+
+
+def _normalize_text_basic(text: str) -> str:
+    import re
+    s = (text or "").lower()
+    s = normalize_dashes(s)
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    return " ".join(s.split())
+
+
+def _target_log(message: str) -> None:
+    if os.getenv("HINGE_TARGET_DEBUG", "1") == "1":
+        print(message)
+
+
+def _ocr_find_text_source_file(images_paths: List[str], target_text: str) -> Dict[str, Any]:
+    try:
+        import cv2
+        import pytesseract
+    except Exception:
+        _target_log("[OCR] pytesseract missing; OCR disabled")
+        return {
+            "source_file": "",
+            "page_half": "unknown",
+            "confidence": 0.0,
+            "error": "pytesseract_missing",
+        }
+
+    target_norm = _normalize_text_basic(target_text)
+    if not target_norm:
+        return {"source_file": "", "page_half": "unknown", "confidence": 0.0}
+    target_words = {w for w in target_norm.split() if len(w) > 2}
+    if not target_words:
+        return {"source_file": "", "page_half": "unknown", "confidence": 0.0}
+
+    _target_log(
+        f"[OCR] start target='{target_text.strip()[:80]}' words={len(target_words)}"
+    )
+    for path in images_paths:
+        if "vpage_" not in str(path):
+            continue
+        abs_path = os.path.abspath(path)
+        try:
+            img = cv2.imread(abs_path)
+            if img is None:
+                continue
+            data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+            words = data.get("text", []) or []
+            xs = data.get("left", []) or []
+            ys = data.get("top", []) or []
+            hs = data.get("height", []) or []
+            h_img = img.shape[0]
+            matched_ys: List[int] = []
+            matched = 0
+            for w, y, h in zip(words, ys, hs):
+                w_norm = _normalize_text_basic(w)
+                if w_norm and w_norm in target_words:
+                    matched += 1
+                    matched_ys.append(int(y + (h / 2)))
+            _target_log(
+                f"[OCR] scan {os.path.basename(abs_path)} matched={matched}/{len(target_words)}"
+            )
+            if matched >= 2:
+                avg_y = sum(matched_ys) / max(len(matched_ys), 1)
+                page_half = "top" if avg_y < (h_img / 2) else "bottom"
+                confidence = min(1.0, matched / max(len(target_words), 1))
+                _target_log(
+                    f"[OCR] match {os.path.basename(abs_path)} half={page_half} conf={confidence:.2f}"
+                )
+                return {
+                    "source_file": abs_path,
+                    "page_half": page_half,
+                    "confidence": confidence,
+                }
+        except Exception:
+            continue
+    _target_log("[OCR] no match")
+    return {"source_file": "", "page_half": "unknown", "confidence": 0.0}
+
+
+def _resolve_target_from_extracted(
+    extracted: Dict[str, Any],
+    target_id: str,
+    images_paths: List[str],
+) -> Dict[str, Any]:
+    target_id = (target_id or "").strip()
+    if target_id.startswith("photo_"):
+        content = (extracted or {}).get("Profile Content (Free Description)", {}) or {}
+        for i in range(1, 7):
+            key = f"Extensive Description of Photo {i}"
+            entry = content.get(key, {}) if isinstance(content, dict) else {}
+            if isinstance(entry, dict) and entry.get("id") == target_id:
+                src = _resolve_source_file(entry.get("source_file", ""), images_paths)
+                page_half = entry.get("page_half", "")
+                return {
+                    "type": "photo",
+                    "id": target_id,
+                    "source_file": src,
+                    "page_half": page_half or "",
+                }
+        return {"type": "photo", "id": target_id, "source_file": "", "page_half": ""}
+
+    if target_id.startswith("prompt_"):
+        content = (extracted or {}).get("Profile Content (Free Description)", {}) or {}
+        prompts = content.get("Profile Prompts and Answers", []) if isinstance(content, dict) else []
+        for item in prompts or []:
+            if isinstance(item, dict) and item.get("id") == target_id:
+                text = str(item.get("prompt") or "").strip()
+                src = _resolve_source_file(item.get("source_file", ""), images_paths)
+                page_half = item.get("page_half", "")
+                if text:
+                    res = _ocr_find_text_source_file(images_paths, text)
+                    if res.get("source_file"):
+                        src = res.get("source_file", "")
+                        page_half = res.get("page_half", "")
+                return {
+                    "type": "prompt",
+                    "id": target_id,
+                    "prompt_text": text,
+                    "source_file": src,
+                    "page_half": page_half,
+                }
+        return {"type": "prompt", "id": target_id, "prompt_text": "", "source_file": "", "page_half": ""}
+
+    if target_id.startswith("poll_1_"):
+        content = (extracted or {}).get("Profile Content (Free Description)", {}) or {}
+        poll = content.get("Poll (optional, most profiles will not have this)", {}) if isinstance(content, dict) else {}
+        answers = poll.get("answers", []) if isinstance(poll, dict) else []
+        for ans in answers or []:
+            if isinstance(ans, dict) and ans.get("id") == target_id:
+                text = str(ans.get("text") or "").strip()
+                src = _resolve_source_file(poll.get("source_file", ""), images_paths)
+                page_half = poll.get("page_half", "")
+                if text:
+                    res = _ocr_find_text_source_file(images_paths, text)
+                    if res.get("source_file"):
+                        src = res.get("source_file", "")
+                        page_half = res.get("page_half", "")
+                return {
+                    "type": "poll",
+                    "id": target_id,
+                    "poll_response": text,
+                    "source_file": src,
+                    "page_half": page_half,
+                }
+        return {"type": "poll", "id": target_id, "poll_response": "", "source_file": "", "page_half": ""}
+
+    return {"type": "unknown", "id": target_id}
+
+
+def _reset_to_top(device, width: int, height: int, attempts: int = 3) -> None:
+    for _ in range(attempts):
+        swipe(device, int(width * 0.5), int(height * 0.3), int(width * 0.5), int(height * 0.85), 500)
+        time.sleep(0.5)
+
+
+def _seek_to_source_file(
+    device,
+    width: int,
+    height: int,
+    source_file: str,
+    page_half: str,
+    max_swipes: int = 12,
+    direction: str = "down",
+) -> str:
+    if not source_file:
+        return ""
+    source_file = os.path.abspath(source_file)
+    page_half = (page_half or "").strip().lower()
+    y_center = int(height * (0.25 if page_half == "top" else 0.75))
+    _target_log(
+        f"[HASH] seek start source={os.path.basename(source_file)} page_half={page_half or 'unknown'} direction={direction}"
+    )
+    for _ in range(max_swipes):
+        ts = int(time.time() * 1000)
+        cur_path = capture_screenshot(device, f"seek_{ts}")
+        matched = False
+        if page_half in {"top", "bottom"}:
+            matched = are_images_similar_roi(cur_path, source_file, y_center=y_center, threshold=6)
+        else:
+            matched = are_images_similar(cur_path, source_file, threshold=6)
+        _target_log(
+            f"[HASH] attempt {os.path.basename(cur_path)} match={'yes' if matched else 'no'}"
+        )
+        if matched:
+            return cur_path
+        if direction == "up":
+            swipe(device, int(width * 0.5), int(height * 0.2), int(width * 0.5), int(height * 0.8), 500)
+        else:
+            swipe(device, int(width * 0.5), int(height * 0.8), int(width * 0.5), int(height * 0.2), 500)
+        time.sleep(0.6)
+    return ""
+
+
+def _click_like_for_target(device, width: int, height: int, page_half: str = "") -> bool:
+    ts = int(time.time() * 1000)
+    cur_path = capture_screenshot(device, f"like_seek_{ts}")
+    cv_res = detect_like_button_cv(cur_path)
+    if isinstance(cv_res, dict) and cv_res.get("found"):
+        like_x = int(cv_res["x"])
+        like_y = int(cv_res["y"])
+        tap(device, like_x, like_y)
+        return True
+
+    # Fallback: tap right side of the relevant half
+    page_half = (page_half or "").strip().lower()
+    if page_half == "top":
+        tap(device, int(width * 0.92), int(height * 0.35))
+        return True
+    if page_half == "bottom":
+        tap(device, int(width * 0.92), int(height * 0.75))
+        return True
+    return False
+
+
 # ---- Scoring rules (v0) ----
 HOME_COUNTRY_PLUS2 = {"NO", "SE", "DK", "FI", "IS", "EE", "LV", "LT", "UA", "RU", "BY"}
 HOME_COUNTRY_PLUS1 = {"IE", "DE", "FR", "NL", "BE", "LU", "CH", "AT", "IT", "ES", "PT", "PL", "CZ", "CA", "US", "AU", "NZ", "JP", "KR", "SG", "IL", "AE"}
@@ -334,6 +741,7 @@ AGE_RANGE_BOUNDS = {
 }
 
 
+# Long Weightings
 def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) -> Dict[str, Any]:
     core = _get_core(extracted)
     visual = _get_visual(extracted)
@@ -688,6 +1096,7 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     }
 
 
+# Short Weightings
 def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any]) -> Dict[str, Any]:
     core = _get_core(extracted)
     visual = _get_visual(extracted)
@@ -725,14 +1134,15 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
 
     dating = core_val("Dating Intentions")
     dating_norm = _norm_value(dating)
-    if dating_norm == _norm_value("Life partner"):
-        record("Core Biometrics", "Dating Intentions", dating, -5)
-    elif dating_norm in {
-        _norm_value("Short term relationship"),
-        _norm_value("Short-term relationship, open to long"),
-        _norm_value("Figuring out my dating goals"),
-    }:
-        record("Core Biometrics", "Dating Intentions", dating, +10)
+    dating_deltas = {
+        _norm_value("Life partner"): -5,
+        _norm_value("Long-term relationship, open to short"): +10,
+        _norm_value("Short-term relationship"): +15,
+        _norm_value("Short-term relationship, open to long"): +10,
+        _norm_value("Figuring out my dating goals"): +10,
+    }
+    if dating_norm in dating_deltas:
+        record("Core Biometrics", "Dating Intentions", dating, dating_deltas[dating_norm])
 
     relationship = core_val("Relationship type")
     relationship_norm = _norm_value(relationship)
@@ -778,28 +1188,6 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     if str(zodiac).strip():
         record("Core Biometrics", "Zodiac Sign", zodiac, -5)
 
-    religion = core_val("Religious Beliefs")
-    religion_norm = _norm_value(religion)
-    if religion_norm == _norm_value("Atheist"):
-        record("Core Biometrics", "Religious Beliefs", religion, +10)
-    elif religion_norm == _norm_value("Jewish"):
-        record("Core Biometrics", "Religious Beliefs", religion, +10)
-    elif religion_norm == _norm_value("Muslim"):
-        record("Core Biometrics", "Religious Beliefs", religion, -1000)
-    elif religion_norm:
-        record("Core Biometrics", "Religious Beliefs", religion, -10)
-
-    politics = core_val("Politics")
-    politics_norm = _norm_value(politics)
-    if politics_norm == _norm_value("Conservative"):
-        record("Core Biometrics", "Politics", politics, +10)
-    elif politics_norm == _norm_value("Not political"):
-        record("Core Biometrics", "Politics", politics, +10)
-    elif politics_norm == _norm_value("Moderate"):
-        record("Core Biometrics", "Politics", politics, +10)
-    elif politics_norm == _norm_value("Liberal"):
-        record("Core Biometrics", "Politics", politics, -5)
-
     # Age weighting (declared age only)
     declared_age = core_val("Age")
     declared_age_int = None
@@ -808,7 +1196,9 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     except Exception:
         declared_age_int = None
     if declared_age_int is not None:
-        if 36 <= declared_age_int <= 40:
+        if 18 <= declared_age_int <= 22:
+            record("Core Biometrics", "Age", "18-22", +5)
+        elif 36 <= declared_age_int <= 40:
             record("Core Biometrics", "Age", "36-40", -10)
         elif declared_age_int >= 41:
             record("Core Biometrics", "Age", "41+", -20)
@@ -1153,6 +1543,13 @@ def _force_gemini_env() -> None:
         os.environ["LLM_MODEL"] = gemini_model
     if gemini_small and not os.getenv("LLM_SMALL_MODEL"):
         os.environ["LLM_SMALL_MODEL"] = gemini_small
+    # Quiet/compact: disable verbose CV + console debug unless explicitly overridden.
+    os.environ.setdefault("HINGE_VERBOSE_LOGGING", "0")
+    os.environ.setdefault("HINGE_CV_DEBUG_MODE", "0")
+    os.environ.setdefault("HINGE_TARGET_DEBUG", "1")
+
+    # Suppress extraction warnings in console unless explicitly enabled.
+    os.environ.setdefault("HINGE_SHOW_EXTRACTION_WARNINGS", "0")
 
 
 def _disable_eval_llm() -> None:
@@ -1199,7 +1596,22 @@ def main() -> int:
     _disable_eval_llm()
     prompt_engine.build_structured_profile_prompt = LLM1
 
+    # Inject vertical image list into LLM1 prompt at batch-build time.
+    try:
+        original_build_llm_batch_payload = ha.build_llm_batch_payload
+
+        def _build_llm_batch_payload_with_images(screenshots: List[str], prompt: str | None = None):
+            vpages = [p for p in (screenshots or []) if isinstance(p, str) and "vpage_" in p]
+            dynamic_prompt = LLM1(image_paths=vpages)
+            return original_build_llm_batch_payload(screenshots, prompt=dynamic_prompt)
+
+        ha.build_llm_batch_payload = _build_llm_batch_payload_with_images
+    except Exception:
+        pass
+    ensure_adb_running()
+
     cfg = DEFAULT_CONFIG
+    cfg.verbose_logging = False
     cfg.llm_provider = "gemini"
     cfg.extraction_small_model = "small"
     cfg.extraction_model = "large"
@@ -1229,6 +1641,122 @@ def main() -> int:
     score_table_long = _format_score_table("Long", long_score_result)
     score_table_short = _format_score_table("Short", short_score_result)
     score_table = score_table_long + "\n\n" + score_table_short
+    long_score = long_score_result.get("score", 0) if isinstance(long_score_result, dict) else 0
+    short_score = short_score_result.get("score", 0) if isinstance(short_score_result, dict) else 0
+
+    T_LONG = 15
+    T_SHORT = 20
+    DOM_MARGIN = 10
+
+    long_ok = long_score >= T_LONG
+    short_ok = short_score >= T_SHORT
+    long_delta = long_score - T_LONG
+    short_delta = short_score - T_SHORT
+
+    if not long_ok and not short_ok:
+        decision = "reject"
+    elif long_ok and (not short_ok or long_delta >= short_delta + DOM_MARGIN):
+        decision = "long_pickup"
+    elif short_ok and (not long_ok or short_delta >= long_delta + DOM_MARGIN):
+        decision = "short_pickup"
+    else:
+        decision = "long_pickup"  # tie-break: prefer long
+
+    # Dating intention hard routing overrides.
+    dating_intention = _norm_value((_get_core(extracted) or {}).get("Dating Intentions", ""))
+    if dating_intention in {
+        _norm_value("Short-term relationship"),
+    }:
+        if decision == "long_pickup":
+            decision = "reject"
+    elif dating_intention == _norm_value("Life partner"):
+        if decision == "short_pickup":
+            decision = "reject"
+
+    # Manual override (TEMP; remove when done)
+    manual_override = ""
+    try:
+        print(
+            "Gate decision pre-override: {decision} (long_score={long_score}, short_score={short_score}, "
+            "long_delta={long_delta}, short_delta={short_delta})".format(
+                decision=decision,
+                long_score=long_score,
+                short_score=short_score,
+                long_delta=long_score - T_LONG,
+                short_delta=short_score - T_SHORT,
+            )
+        )
+        override = input("Override decision? (long/short/reject, blank to keep): ").strip().lower()
+        if override in {"long", "short", "reject"}:
+            manual_override = override
+            decision = {"long": "long_pickup", "short": "short_pickup", "reject": "reject"}[override]
+    except Exception:
+        pass
+    print(
+        "GATE decision={decision} long_score={long_score} short_score={short_score} "
+        "long_delta={long_delta} short_delta={short_delta} dom_margin={dom_margin}".format(
+            decision=decision,
+            long_score=long_score,
+            short_score=short_score,
+            long_delta=long_score - T_LONG,
+            short_delta=short_score - T_SHORT,
+            dom_margin=DOM_MARGIN,
+        )
+    )
+    llm3_variant = ""
+    llm3_result = {}
+    llm4_result = {}
+    target_action = {}
+    if decision == "short_pickup":
+        llm3_variant = "short"
+        llm3_result = run_llm3_short(extracted)
+    elif decision == "long_pickup":
+        llm3_variant = "long"
+        llm3_result = run_llm3_long(extracted)
+    if llm3_result:
+        llm4_result = run_llm4(llm3_result)
+        target_id = str(llm4_result.get("main_target_id", "") or "").strip()
+        if target_id:
+            print(f"[TARGET] LLM4 chose target_id={target_id}")
+            images_paths = llm_meta.get("images_paths", []) or []
+            target_info = _resolve_target_from_extracted(extracted, target_id, images_paths)
+            target_action = {"target_id": target_id, **target_info}
+            print(
+                "[TARGET] resolved type={type} source_file={source_file} page_half={page_half}".format(
+                    type=target_info.get("type"),
+                    source_file=target_info.get("source_file"),
+                    page_half=target_info.get("page_half"),
+                )
+            )
+            device = s.get("device")
+            width = s.get("width")
+            height = s.get("height")
+            if target_info.get("source_file") and device and width and height:
+                matched = _seek_to_source_file(
+                    device,
+                    width,
+                    height,
+                    target_info.get("source_file", ""),
+                    target_info.get("page_half", ""),
+                    max_swipes=12,
+                    direction="up",
+                )
+                target_action["matched_screenshot"] = matched
+                print(f"[TARGET] match={'yes' if matched else 'no'}")
+                if matched:
+                    tapped = _click_like_for_target(
+                        device,
+                        width,
+                        height,
+                        target_info.get("page_half", ""),
+                    )
+                    target_action["tap_like"] = bool(tapped)
+                    print(f"[TARGET] tap_like={'yes' if tapped else 'no'}")
+            else:
+                if not target_info.get("source_file"):
+                    print("[TARGET] no source_file resolved; skipping seek/tap")
+                else:
+                    print("[TARGET] device/size missing; skipping seek/tap")
     out = {
         "meta": {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -1239,6 +1767,21 @@ def main() -> int:
             "timings": s.get("timings", {}),
             "scoring_ruleset": "long_v0",
         },
+        "gate_decision": decision,
+        "gate_metrics": {
+            "long_score": int(long_score),
+            "short_score": int(short_score),
+            "long_delta": int(long_score - T_LONG),
+            "short_delta": int(short_score - T_SHORT),
+            "dom_margin": int(DOM_MARGIN),
+            "t_long": int(T_LONG),
+            "t_short": int(T_SHORT),
+        },
+        "manual_override": manual_override,
+        "llm3_variant": llm3_variant,
+        "llm3_result": llm3_result,
+        "llm4_result": llm4_result,
+        "target_action": target_action,
         "extracted_profile": extracted,
         "profile_eval": eval_result,
         "long_score_result": long_score_result,
@@ -1267,71 +1810,105 @@ def main() -> int:
         print(f"Failed to write results: {e}")
 
     # TEMP: manual preference logging (remove after tuning)
+    # Commented out for now to avoid interactive prompts during test runs.
+    # try:
+    #     name = (
+    #         (extracted.get("Core Biometrics (Objective)", {}) or {}).get("Name")
+    #         if isinstance(extracted, dict)
+    #         else ""
+    #     )
+    #     long_score = long_score_result.get("score", 0) if isinstance(long_score_result, dict) else 0
+    #     short_score = short_score_result.get("score", 0) if isinstance(short_score_result, dict) else 0
+    #     print("\n=== Manual Preference Input (TEMP) ===")
+    #     def _prompt_yes_no(label: str) -> str:
+    #         while True:
+    #             resp = input(label).strip().lower()
+    #             if resp in {"y", "n"}:
+    #                 return resp
+    #             print("Please enter y or n.")
+    #
+    #     def _prompt_short_long(label: str) -> str:
+    #         while True:
+    #             resp = input(label).strip().lower()
+    #             if resp in {"short"}:
+    #                 return "short"
+    #             if resp in {"long"}:
+    #                 return "long"
+    #             print("Please enter exactly 'short' or 'long'.")
+    #
+    #     user_like = _prompt_yes_no("Your verdict? (y/n): ")
+    #     user_score_raw = input("Your score (0-10): ").strip()
+    #     user_score = None
+    #     try:
+    #         user_score = int(user_score_raw)
+    #     except Exception:
+    #         user_score = None
+    #     short_long = "n/a"
+    #     if user_like == "y":
+    #         short_long = _prompt_short_long("Short or long? (type exactly 'short' or 'long'): ")
+    #     thoughts = input("Any thoughts? (optional): ").strip()
+    #
+    #     long_contributions = long_score_result.get("contributions", []) if isinstance(long_score_result, dict) else []
+    #     short_contributions = short_score_result.get("contributions", []) if isinstance(short_score_result, dict) else []
+    #     age = None
+    #     if isinstance(long_score_result, dict):
+    #         age = (long_score_result.get("signals", {}) or {}).get("declared_age")
+    #     if age is None and isinstance(extracted, dict):
+    #         age = (extracted.get("Core Biometrics (Objective)", {}) or {}).get("Age")
+    #
+    #     manual_log = {
+    #         "timestamp": datetime.now().isoformat(timespec="seconds"),
+    #         "name": name or "",
+    #         "json_path": out_path or "",
+    #         "long_score": int(long_score),
+    #         "short_score": int(short_score),
+    #         "gate_decision": decision,
+    #         "gate_long_delta": int(long_score - T_LONG),
+    #         "gate_short_delta": int(short_score - T_SHORT),
+    #         "gate_dom_margin": int(DOM_MARGIN),
+    #         "gate_t_long": int(T_LONG),
+    #         "gate_t_short": int(T_SHORT),
+    #         "user_like": user_like,
+    #         "user_score": user_score,
+    #         "short_long": short_long,
+    #         "age": age,
+    #         "long_score_contributions": long_contributions,
+    #         "short_score_contributions": short_contributions,
+    #         "thoughts": thoughts,
+    #     }
+    #     manual_log_path = os.path.join("logs", "manual_preference_log.jsonl")
+    #     with open(manual_log_path, "a", encoding="utf-8") as f:
+    #         f.write(json.dumps(manual_log, ensure_ascii=False) + "\n")
+    #     print(f"Logged manual preferences to {manual_log_path}")
+    # except Exception as e:
+    #     print(f"Failed to log manual preferences: {e}")
+
+    # Final concise decision summary (print last)
     try:
-        name = (
-            (extracted.get("Core Biometrics (Objective)", {}) or {}).get("Name")
-            if isinstance(extracted, dict)
-            else ""
+        def _top_contribs(score_result: Dict[str, Any], n: int = 3) -> str:
+            contribs = score_result.get("contributions", []) if isinstance(score_result, dict) else []
+            items = [
+                (abs(int(c.get("delta", 0) or 0)), c)
+                for c in contribs
+                if int(c.get("delta", 0) or 0) != 0
+            ]
+            items.sort(key=lambda x: x[0], reverse=True)
+            parts = []
+            for _, c in items[:n]:
+                parts.append(f"{c.get('field','')}: {c.get('value','')} ({c.get('delta','')})")
+            return "; ".join(parts) if parts else "none"
+
+        chosen_result = long_score_result if decision == "long_pickup" else short_score_result
+        chosen_label = "long" if decision == "long_pickup" else ("short" if decision == "short_pickup" else "n/a")
+        summary = (
+            f"FINAL decision={decision} "
+            f"long_score={long_score} short_score={short_score} "
+            f"long_delta={long_score - T_LONG} short_delta={short_score - T_SHORT} "
+            f"key_{chosen_label}_contributors={_top_contribs(chosen_result)}"
         )
-        long_score = long_score_result.get("score", 0) if isinstance(long_score_result, dict) else 0
-        short_score = short_score_result.get("score", 0) if isinstance(short_score_result, dict) else 0
-        print("\n=== Manual Preference Input (TEMP) ===")
-        def _prompt_yes_no(label: str) -> str:
-            while True:
-                resp = input(label).strip().lower()
-                if resp in {"y", "n"}:
-                    return resp
-                print("Please enter y or n.")
-
-        def _prompt_short_long(label: str) -> str:
-            while True:
-                resp = input(label).strip().lower()
-                if resp in {"short"}:
-                    return "short"
-                if resp in {"long"}:
-                    return "long"
-                print("Please enter exactly 'short' or 'long'.")
-
-        user_like = _prompt_yes_no("Your verdict? (y/n): ")
-        user_score_raw = input("Your score (0-10): ").strip()
-        user_score = None
-        try:
-            user_score = int(user_score_raw)
-        except Exception:
-            user_score = None
-        short_long = "n/a"
-        if user_like == "y":
-            short_long = _prompt_short_long("Short or long? (type exactly 'short' or 'long'): ")
-        thoughts = input("Any thoughts? (optional): ").strip()
-
-        long_contributions = long_score_result.get("contributions", []) if isinstance(long_score_result, dict) else []
-        short_contributions = short_score_result.get("contributions", []) if isinstance(short_score_result, dict) else []
-        age = None
-        if isinstance(long_score_result, dict):
-            age = (long_score_result.get("signals", {}) or {}).get("declared_age")
-        if age is None and isinstance(extracted, dict):
-            age = (extracted.get("Core Biometrics (Objective)", {}) or {}).get("Age")
-
-        manual_log = {
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "name": name or "",
-            "json_path": out_path or "",
-            "long_score": int(long_score),
-            "short_score": int(short_score),
-            "user_like": user_like,
-            "user_score": user_score,
-            "short_long": short_long,
-            "age": age,
-            "long_score_contributions": long_contributions,
-            "short_score_contributions": short_contributions,
-            "thoughts": thoughts,
-        }
-        manual_log_path = os.path.join("logs", "manual_preference_log.jsonl")
-        with open(manual_log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(manual_log, ensure_ascii=False) + "\n")
-        print(f"Logged manual preferences to {manual_log_path}")
-    except Exception as e:
-        print(f"Failed to log manual preferences: {e}")
+        print(summary)
+    except Exception:
+        pass
 
     return 0
 
