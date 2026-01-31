@@ -238,7 +238,7 @@ def LLM1_VISUAL() -> str:
         '    "Attire and Style Indicators": "",\n'
         '    "Body Language and Expression": "",\n'
         '    "Visible Enhancements or Features": "",\n'
-        '    "Apparent Upper Body Proportions": "",\n'
+        '    "Apparent Chest Proportions": "",\n'
         '    "Apparent Attractiveness Tier": "",\n'
         '    "Reasoning for attractiveness tier": "",\n'
         '    "Facial Proportion Balance": "",\n'
@@ -254,9 +254,9 @@ def LLM1_VISUAL() -> str:
         "- Base everything ONLY on the photos (no text or profile info).\n"
         "- If something is unclear, leave the field empty.\n\n"
         "Photo description rules:\n"
-        "- Provide a detailed, neutral visual summary of the main subject: clothing, pose, activity, background, "
+        "- Provide a detailed, visual summary of the main subject: clothing, pose, activity, background, "
         "facial features when visible, skin tone, build, grooming, accessories, and overall presentation. "
-        "Avoid judgmental language.\n\n"
+        "Unbiased, accurate responses are required. Conventionally unattractive people should be labelled as so, false positivity should be avoided.\n\n"
         "Visual traits allowed values (select exactly one unless it says multiple):\n\n"
         '"Face Visibility Quality": "Clear face in 3+ photos", "Clear face in 1-2 photos", "Face often partially obscured", "Face mostly not visible"\n'
         '"Photo Authenticity / Editing Level": "No obvious filters", "Some filters or mild editing", "Heavy filters/face smoothing", "Unclear"\n'
@@ -273,7 +273,7 @@ def LLM1_VISUAL() -> str:
         '"Attire and Style Indicators": "Very modest/covered", "Casual/comfortable", "Low-key/natural", "Polished/elegant", "Sporty/active", "Form-fitting/suggestive", "Highly revealing", "Edgy/alternative"\n'
         '"Body Language and Expression": "Shy/reserved", "Relaxed/casual", "Approachable/open", "Confident/engaging", "Playful/flirty", "Energetic/vibrant"\n'
         '"Visible Enhancements or Features": "None visible", "Glasses", "Sunglasses", "Makeup (light)", "Makeup (heavy)", "Jewelry", "Painted nails", "Very long nails (2cm+)", "Hair extensions/wig (obvious)", "False eyelashes (obvious)", "Hat/cap/beanie (worn in most photos)"\n'
-        '"Apparent Upper Body Proportions": "Petite/small/narrow", "Average/balanced/proportional", "Defined/toned", "Full/curvy", "Prominent/voluptuous", "Broad/strong"\n'
+        '"Apparent Chest Proportions": "Petite/small/narrow", "Average/balanced/proportional", "Defined/toned", "Full/curvy", "Prominent/voluptuous", "Broad/strong"\n'
         '"Apparent Attractiveness Tier": "Very unattractive/morbidly obese", "Low", "Average", "Above average", "High", "Very attractive", "Extremely attractive", "Supermodel"\n'
         '"Facial Proportion Balance": "Balanced/proportional", "Slightly unbalanced", "Noticeably unbalanced"\n'
         '"Grooming Effort Level": "Minimal/natural", "Moderate/casual", "High/polished", "Heavy/overdone"\n'
@@ -419,7 +419,6 @@ def LLM4(openers_json: Dict[str, Any]) -> str:
     return (
         "You are selecting the single best Hinge opener from a provided list.\n"
         "Pick the one most likely to get a reply. Be decisive.\n\n"
-        "Temp: You may only pick from photo ones, do not use prompt/polls \n\n"
         "Openers JSON:\n"
         f"{openers_str}\n\n"
         "Output JSON only:\n"
@@ -493,6 +492,11 @@ def run_profile_eval_llm(extracted: Dict[str, Any], model: str | None = None) ->
     prompt = LLM2(home_town, job_title, university)
     requested_model = model or get_default_model()
     resolved_model = resolve_model(requested_model)
+    trace_lines = [
+        f"AI_CALL call_id=profile_eval_llm model={resolved_model} response_format=json_object"
+    ]
+    trace_lines.extend(_ai_trace_prompt_lines(prompt))
+    _ai_trace_log(trace_lines)
 
     try:
         t0 = time.perf_counter()
@@ -501,14 +505,49 @@ def run_profile_eval_llm(extracted: Dict[str, Any], model: str | None = None) ->
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
-        _ = int((time.perf_counter() - t0) * 1000)
-        raw = resp.choices[0].message.content or "{}"
-        parsed = json.loads(raw)
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+        raw = resp.choices[0].message.content or ""
+        try:
+            parsed = json.loads(raw or "{}")
+        except Exception as e:
+            _ai_trace_log_response(
+                "profile_eval_llm",
+                resolved_model,
+                raw,
+                parsed=None,
+                duration_ms=dt_ms,
+                error=f"json_parse_error: {e}",
+            )
+            _log(f"[LLM2] parse failed: {e}")
+            return _default_profile_eval()
         if not isinstance(parsed, dict):
-            parsed = _default_profile_eval()
+            _ai_trace_log_response(
+                "profile_eval_llm",
+                resolved_model,
+                raw,
+                parsed=None,
+                duration_ms=dt_ms,
+                error="parsed_not_dict",
+            )
+            return _default_profile_eval()
         parsed = normalize_dashes(parsed)
+        _ai_trace_log_response(
+            "profile_eval_llm",
+            resolved_model,
+            raw,
+            parsed=parsed,
+            duration_ms=dt_ms,
+        )
         return parsed
-    except Exception:
+    except Exception as e:
+        _ai_trace_log_response(
+            "profile_eval_llm",
+            resolved_model,
+            raw="",
+            parsed=None,
+            duration_ms=None,
+            error=f"call_error: {e}",
+        )
         return _default_profile_eval()
 
 
@@ -520,6 +559,12 @@ def run_llm1_visual(
     payload = build_llm_batch_payload(image_paths, prompt=prompt)
     requested_model = model or get_default_model()
     resolved_model = resolve_model(requested_model)
+    trace_lines = [
+        f"AI_CALL call_id=llm1_visual model={resolved_model} response_format=json_object"
+    ]
+    trace_lines.extend(_ai_trace_prompt_lines(prompt))
+    trace_lines.extend(_ai_trace_image_lines(image_paths))
+    _ai_trace_log(trace_lines)
     try:
         t0 = time.perf_counter()
         resp = get_llm_client().chat.completions.create(
@@ -527,13 +572,48 @@ def run_llm1_visual(
             response_format={"type": "json_object"},
             messages=payload.get("messages", []),
         )
-        _ = int((time.perf_counter() - t0) * 1000)
-        raw = resp.choices[0].message.content or "{}"
-        parsed = json.loads(raw)
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+        raw = resp.choices[0].message.content or ""
+        try:
+            parsed = json.loads(raw or "{}")
+        except Exception as e:
+            _ai_trace_log_response(
+                "llm1_visual",
+                resolved_model,
+                raw,
+                parsed=None,
+                duration_ms=dt_ms,
+                error=f"json_parse_error: {e}",
+            )
+            _log(f"[LLM1] parse failed: {e}")
+            return {}, payload.get("meta", {})
         if not isinstance(parsed, dict):
-            parsed = {}
+            _ai_trace_log_response(
+                "llm1_visual",
+                resolved_model,
+                raw,
+                parsed=None,
+                duration_ms=dt_ms,
+                error="parsed_not_dict",
+            )
+            return {}, payload.get("meta", {})
+        _ai_trace_log_response(
+            "llm1_visual",
+            resolved_model,
+            raw,
+            parsed=parsed,
+            duration_ms=dt_ms,
+        )
         return parsed, payload.get("meta", {})
     except Exception as e:
+        _ai_trace_log_response(
+            "llm1_visual",
+            resolved_model,
+            raw="",
+            parsed=None,
+            duration_ms=None,
+            error=f"call_error: {e}",
+        )
         _log(f"[LLM1] visual call failed: {e}")
         return {}, payload.get("meta", {})
 
@@ -542,16 +622,60 @@ def run_llm3_long(extracted: Dict[str, Any], model: str | None = None) -> Dict[s
     prompt = LLM3_LONG(extracted)
     requested_model = model or get_default_model()
     resolved_model = resolve_model(requested_model)
+    trace_lines = [
+        f"AI_CALL call_id=llm3_long model={resolved_model} response_format=json_object"
+    ]
+    trace_lines.extend(_ai_trace_prompt_lines(prompt))
+    _ai_trace_log(trace_lines)
     try:
+        t0 = time.perf_counter()
         resp = get_llm_client().chat.completions.create(
             model=resolved_model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = resp.choices[0].message.content or "{}"
-        parsed = json.loads(raw)
-        return parsed if isinstance(parsed, dict) else {}
-    except Exception:
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+        raw = resp.choices[0].message.content or ""
+        try:
+            parsed = json.loads(raw or "{}")
+        except Exception as e:
+            _ai_trace_log_response(
+                "llm3_long",
+                resolved_model,
+                raw,
+                parsed=None,
+                duration_ms=dt_ms,
+                error=f"json_parse_error: {e}",
+            )
+            _log(f"[LLM3] long parse failed: {e}")
+            return {}
+        if not isinstance(parsed, dict):
+            _ai_trace_log_response(
+                "llm3_long",
+                resolved_model,
+                raw,
+                parsed=None,
+                duration_ms=dt_ms,
+                error="parsed_not_dict",
+            )
+            return {}
+        _ai_trace_log_response(
+            "llm3_long",
+            resolved_model,
+            raw,
+            parsed=parsed,
+            duration_ms=dt_ms,
+        )
+        return parsed
+    except Exception as e:
+        _ai_trace_log_response(
+            "llm3_long",
+            resolved_model,
+            raw="",
+            parsed=None,
+            duration_ms=None,
+            error=f"call_error: {e}",
+        )
         return {}
 
 
@@ -559,16 +683,60 @@ def run_llm3_short(extracted: Dict[str, Any], model: str | None = None) -> Dict[
     prompt = LLM3_SHORT(extracted)
     requested_model = model or get_default_model()
     resolved_model = resolve_model(requested_model)
+    trace_lines = [
+        f"AI_CALL call_id=llm3_short model={resolved_model} response_format=json_object"
+    ]
+    trace_lines.extend(_ai_trace_prompt_lines(prompt))
+    _ai_trace_log(trace_lines)
     try:
+        t0 = time.perf_counter()
         resp = get_llm_client().chat.completions.create(
             model=resolved_model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = resp.choices[0].message.content or "{}"
-        parsed = json.loads(raw)
-        return parsed if isinstance(parsed, dict) else {}
-    except Exception:
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+        raw = resp.choices[0].message.content or ""
+        try:
+            parsed = json.loads(raw or "{}")
+        except Exception as e:
+            _ai_trace_log_response(
+                "llm3_short",
+                resolved_model,
+                raw,
+                parsed=None,
+                duration_ms=dt_ms,
+                error=f"json_parse_error: {e}",
+            )
+            _log(f"[LLM3] short parse failed: {e}")
+            return {}
+        if not isinstance(parsed, dict):
+            _ai_trace_log_response(
+                "llm3_short",
+                resolved_model,
+                raw,
+                parsed=None,
+                duration_ms=dt_ms,
+                error="parsed_not_dict",
+            )
+            return {}
+        _ai_trace_log_response(
+            "llm3_short",
+            resolved_model,
+            raw,
+            parsed=parsed,
+            duration_ms=dt_ms,
+        )
+        return parsed
+    except Exception as e:
+        _ai_trace_log_response(
+            "llm3_short",
+            resolved_model,
+            raw="",
+            parsed=None,
+            duration_ms=None,
+            error=f"call_error: {e}",
+        )
         return {}
 
 
@@ -576,16 +744,53 @@ def run_llm4(openers_json: Dict[str, Any], model: str | None = None) -> Dict[str
     prompt = LLM4(openers_json)
     requested_model = model or get_default_model()
     resolved_model = resolve_model(requested_model)
+    trace_lines = [
+        f"AI_CALL call_id=llm4 model={resolved_model} response_format=json_object"
+    ]
+    trace_lines.extend(_ai_trace_prompt_lines(prompt))
+    _ai_trace_log(trace_lines)
     try:
+        t0 = time.perf_counter()
         resp = get_llm_client().chat.completions.create(
             model=resolved_model,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = resp.choices[0].message.content or "{}"
-        parsed = json.loads(raw)
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+        raw = resp.choices[0].message.content or ""
+        try:
+            parsed = json.loads(raw or "{}")
+        except Exception as e:
+            _ai_trace_log_response(
+                "llm4",
+                resolved_model,
+                raw,
+                parsed=None,
+                duration_ms=dt_ms,
+                error=f"json_parse_error: {e}",
+            )
+            _log(f"[LLM4] parse failed: {e}")
+            return {}
+        try:
+            _ai_trace_log_response(
+                "llm4",
+                resolved_model,
+                raw,
+                parsed=parsed,
+                duration_ms=dt_ms,
+            )
+        except Exception:
+            pass
         return parsed if isinstance(parsed, dict) else {}
-    except Exception:
+    except Exception as e:
+        _ai_trace_log_response(
+            "llm4",
+            resolved_model,
+            raw="",
+            parsed=None,
+            duration_ms=None,
+            error=f"call_error: {e}",
+        )
         return {}
 
 
@@ -689,6 +894,71 @@ def _compute_center_ahash_from_file(
 def _target_log(message: str) -> None:
     if os.getenv("HINGE_TARGET_DEBUG", "1") == "1":
         print(message)
+
+
+def _ai_trace_file() -> str:
+    return os.getenv("HINGE_AI_TRACE_FILE", "")
+
+
+def _ai_trace_enabled() -> bool:
+    return bool(_ai_trace_file())
+
+
+def _ai_trace_log(lines: List[str]) -> None:
+    if not _ai_trace_enabled():
+        return
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    out_lines = [f"[{ts}] {line}" for line in lines]
+    try:
+        with open(_ai_trace_file(), "a", encoding="utf-8") as f:
+            f.write("\n".join(out_lines) + "\n")
+    except Exception:
+        pass
+
+
+def _ai_trace_prompt_lines(prompt: str) -> List[str]:
+    return ["PROMPT=<<<BEGIN", *prompt.splitlines(), "<<<END"]
+
+
+def _ai_trace_image_lines(image_paths: List[str]) -> List[str]:
+    lines: List[str] = []
+    for p in image_paths or []:
+        if not p:
+            continue
+        path = os.path.abspath(str(p))
+        try:
+            sz = os.path.getsize(path)
+        except Exception:
+            sz = "?"
+        lines.append(f"IMAGE image_path={path} image_size={sz} bytes")
+    return lines
+
+
+def _ai_trace_log_response(
+    call_id: str,
+    model: str,
+    raw: str,
+    parsed: Any = None,
+    duration_ms: Optional[int] = None,
+    error: Optional[str] = None,
+) -> None:
+    lines: List[str] = []
+    header = f"AI_RESP call_id={call_id} model={model}"
+    if duration_ms is not None:
+        header += f" duration_ms={duration_ms}"
+    lines.append(header)
+    if error:
+        lines.append(f"ERROR={error}")
+    if parsed is not None:
+        try:
+            lines.extend(
+                ["OUTPUT=<<<BEGIN_JSON", *json.dumps(parsed, ensure_ascii=False, indent=2).splitlines(), "<<<END_JSON"]
+            )
+        except Exception:
+            lines.extend(["OUTPUT=<<<BEGIN_TEXT", str(parsed), "<<<END_TEXT"])
+    else:
+        lines.extend(["OUTPUT=<<<BEGIN_TEXT", *(str(raw) or "").splitlines(), "<<<END_TEXT"])
+    _ai_trace_log(lines)
 
 
 def _log(message: str) -> None:
@@ -2476,6 +2746,118 @@ def _seek_photo_by_index(
     return {"nodes": nodes, "scroll_area": scroll_area, "scroll_offset": offset}
 
 
+def _seek_photo_by_index_from_bottom(
+    device,
+    width: int,
+    height: int,
+    scroll_area: Tuple[int, int, int, int],
+    nodes: Optional[List[Dict[str, Any]]],
+    current_offset: int,
+    target_index: int,
+    total_photos: int,
+    target_hash: Optional[int] = None,
+    max_steps: int = 25,
+    max_dist: int = 18,
+) -> Dict[str, Any]:
+    """
+    Photo re-acquire by index starting from bottom (current screen).
+    Counts square photos while scrolling up to reach target from bottom.
+    """
+    if not scroll_area or total_photos <= 0 or target_index <= 0:
+        return {"nodes": nodes, "scroll_area": scroll_area, "scroll_offset": current_offset}
+    target_from_bottom = total_photos - target_index + 1
+    if target_from_bottom <= 0:
+        return {"nodes": nodes, "scroll_area": scroll_area, "scroll_offset": current_offset}
+    _log(f"[SEEK-PHOTO] reverse target_from_bottom={target_from_bottom} total={total_photos}")
+
+    offset = current_offset
+    if not nodes:
+        xml = _dump_ui_xml(device)
+        nodes = _parse_ui_nodes(xml)
+    scroll_area = _find_scroll_area(nodes) or scroll_area
+    area_h = max(1, scroll_area[3] - scroll_area[1])
+    step_px = int(area_h * 0.45)
+    no_move = 0
+    steps = 0
+    count = 0
+    seen_hashes: List[int] = []
+
+    while steps < max_steps:
+        photo_bounds = _find_primary_photo_bounds(nodes, scroll_area)
+        if photo_bounds:
+            nodes, offset, photo_bounds = _ensure_photo_square(
+                device,
+                width,
+                height,
+                scroll_area,
+                nodes,
+                offset,
+                photo_bounds,
+            )
+            scroll_area = _find_scroll_area(nodes) or scroll_area
+            if photo_bounds and _is_square_bounds(photo_bounds):
+                h = _compute_center_ahash_from_bounds(
+                    device, photo_bounds, width, height
+                )
+                dist = _ahash_distance(h, target_hash) if (h is not None and target_hash is not None) else None
+                _log(f"[SEEK-PHOTO] candidate bounds={photo_bounds} dist={dist}")
+                is_new = True
+                if h is not None:
+                    for prev in seen_hashes:
+                        if _ahash_distance(h, prev) <= 6:
+                            is_new = False
+                            break
+                if is_new:
+                    count += 1
+                    if h is not None:
+                        seen_hashes.append(h)
+                    _log(f"[SEEK-PHOTO] count={count} target={target_from_bottom}")
+                    if count == target_from_bottom:
+                        like_bounds, like_desc = _find_like_button_in_photo(
+                            nodes, photo_bounds
+                        )
+                        if like_bounds:
+                            if dist is not None and dist > max_dist:
+                                _log(
+                                    f"[SEEK-PHOTO] warning: hash dist {dist} > {max_dist} at target index"
+                                )
+                            _log(
+                                f"[SEEK-PHOTO] index match like_bounds={like_bounds}"
+                            )
+                            return {
+                                "nodes": nodes,
+                                "scroll_area": scroll_area,
+                                "scroll_offset": offset,
+                                "tap_bounds": like_bounds,
+                                "tap_desc": like_desc,
+                            }
+
+        prev_nodes = nodes
+        nodes, delta = _scroll_and_capture(
+            device,
+            width,
+            height,
+            scroll_area,
+            "up",
+            prev_nodes,
+            distance_px=step_px,
+            duration_ms=420,
+        )
+        scroll_area = _find_scroll_area(nodes) or scroll_area
+        offset += delta
+        _log(f"[SEEK-PHOTO] step {steps+1} offset={offset}")
+        steps += 1
+        if abs(delta) <= 5:
+            no_move += 1
+        else:
+            no_move = 0
+        if no_move >= 2:
+            _log("[SEEK-PHOTO] no-move twice; stopping")
+            break
+
+    return {"nodes": nodes, "scroll_area": scroll_area, "scroll_offset": offset}
+
+
 def _compute_desired_offset(
     abs_bounds: Tuple[int, int, int, int],
     scroll_area: Tuple[int, int, int, int],
@@ -3003,7 +3385,7 @@ def _build_extracted_profile(
         "Attire and Style Indicators",
         "Body Language and Expression",
         "Visible Enhancements or Features",
-        "Apparent Upper Body Proportions",
+        "Apparent Chest Proportions",
         "Apparent Attractiveness Tier",
         "Reasoning for attractiveness tier",
         "Facial Proportion Balance",
@@ -3579,12 +3961,12 @@ def _score_profile_long(extracted: Dict[str, Any], eval_result: Dict[str, Any]) 
     }:
         record("Visual Analysis", "Apparent Ethnic Features", ethnic, +5)
 
-    upper_body = visual_val("Apparent Upper Body Proportions")
-    upper_norm = _norm_value(upper_body)
-    if upper_norm == _norm_value("Petite/small/narrow"):
-        record("Visual Analysis", "Apparent Upper Body Proportions", upper_body, -5)
-    elif upper_norm and upper_norm != _norm_value("Average/balanced/proportional"):
-        record("Visual Analysis", "Apparent Upper Body Proportions", upper_body, +5)
+    chest = visual_val("Apparent Chest Proportions")
+    chest_norm = _norm_value(chest)
+    if chest_norm == _norm_value("Petite/small/narrow"):
+        record("Visual Analysis", "Apparent Chest Proportions", chest, -5)
+    elif chest_norm and chest_norm != _norm_value("Average/balanced/proportional"):
+        record("Visual Analysis", "Apparent Chest Proportions", chest, +5)
 
     enhancements = _split_csv(visual_val("Visible Enhancements or Features"))
     for item in enhancements:
@@ -3978,12 +4360,12 @@ def _score_profile_short(extracted: Dict[str, Any], eval_result: Dict[str, Any])
     elif skin_norm in {_norm_value("Dark-brown/chestnut"), _norm_value("Very dark/ebony/deep")}:
         record("Visual Analysis", "Apparent Skin Tone", skin, -1000)
 
-    upper_body = visual_val("Apparent Upper Body Proportions")
-    upper_norm = _norm_value(upper_body)
-    if upper_norm == _norm_value("Petite/small/narrow"):
-        record("Visual Analysis", "Apparent Upper Body Proportions", upper_body, -5)
-    elif upper_norm and upper_norm != _norm_value("Average/balanced/proportional"):
-        record("Visual Analysis", "Apparent Upper Body Proportions", upper_body, +5)
+    chest = visual_val("Apparent Chest Proportions")
+    chest_norm = _norm_value(chest)
+    if chest_norm == _norm_value("Petite/small/narrow"):
+        record("Visual Analysis", "Apparent Chest Proportions", chest, -5)
+    elif chest_norm and chest_norm != _norm_value("Average/balanced/proportional"):
+        record("Visual Analysis", "Apparent Chest Proportions", chest, +5)
 
     enhancements = _split_csv(visual_val("Visible Enhancements or Features"))
     for item in enhancements:
@@ -4212,6 +4594,7 @@ def main() -> int:
     photo_paths = scan_result.get("photo_paths", [])
     scroll_offset = int(scan_result.get("scroll_offset", 0))
     scroll_area = scan_result.get("scroll_area")
+    scan_nodes = scan_result.get("nodes")
 
     _log(f"[LLM1] Sending {len(photo_paths)} photos for visual analysis")
     llm1_result, llm1_meta = run_llm1_visual(
@@ -4316,23 +4699,41 @@ def main() -> int:
                     target_index = int(str(target_id).split("_", 1)[1])
                 except Exception:
                     target_index = None
+                total_photos = len(ui_map.get("photos", []))
                 if target_hash is None or not scroll_area:
                     print("[TARGET] missing photo hash or scroll area; skipping tap")
                 elif not target_index:
                     print("[TARGET] missing photo index; skipping tap")
                 else:
-                    seek_photo = _seek_photo_by_index(
+                    seek_photo = _seek_photo_by_index_from_bottom(
                         device,
                         width,
                         height,
                         scroll_area,
+                        scan_nodes,
+                        scroll_offset,
                         int(target_index),
+                        total_photos,
                         target_hash=int(target_hash),
                     )
                     cur_nodes = seek_photo.get("nodes")
                     cur_scroll_area = seek_photo.get("scroll_area") or scroll_area
                     tap_bounds = seek_photo.get("tap_bounds")
                     tap_desc = seek_photo.get("tap_desc", "Like photo")
+                    if not tap_bounds:
+                        print("[TARGET] reverse seek failed; falling back to top-down scan")
+                        seek_photo = _seek_photo_by_index(
+                            device,
+                            width,
+                            height,
+                            scroll_area,
+                            int(target_index),
+                            target_hash=int(target_hash),
+                        )
+                        cur_nodes = seek_photo.get("nodes")
+                        cur_scroll_area = seek_photo.get("scroll_area") or scroll_area
+                        tap_bounds = seek_photo.get("tap_bounds")
+                        tap_desc = seek_photo.get("tap_desc", "Like photo")
                     if tap_bounds:
                         tap_x, tap_y = _bounds_center(tap_bounds)
                         tap_x = max(0, min(width - 1, tap_x))

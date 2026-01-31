@@ -178,12 +178,6 @@ def _openai_messages_to_gemini(messages: List[Dict[str, Any]]) -> Tuple[List[Dic
 
 def _gemini_text_from_response(resp: Any) -> str:
     try:
-        text = getattr(resp, "text", None)
-        if isinstance(text, str) and text:
-            return text
-    except Exception:
-        pass
-    try:
         parts_out: List[str] = []
         candidates = getattr(resp, "candidates", []) or []
         for cand in candidates:
