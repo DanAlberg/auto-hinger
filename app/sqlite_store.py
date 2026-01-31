@@ -1,7 +1,35 @@
 import os
 import sqlite3
 from datetime import datetime
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
+
+
+VISUAL_TRAIT_FIELDS: List[Tuple[str, str]] = [
+    ("Face Visibility Quality", "Face_Visibility_Quality"),
+    ("Photo Authenticity / Editing Level", "Photo_Authenticity_Editing_Level"),
+    ("Apparent Body Fat Level", "Apparent_Body_Fat_Level"),
+    ("Profile Distinctiveness", "Profile_Distinctiveness"),
+    ("Apparent Build Category", "Apparent_Build_Category"),
+    ("Apparent Skin Tone", "Apparent_Skin_Tone"),
+    ("Apparent Ethnic Features", "Apparent_Ethnic_Features"),
+    ("Hair Color", "Hair_Color"),
+    ("Facial Symmetry Level", "Facial_Symmetry_Level"),
+    ("Indicators of Fitness or Lifestyle", "Indicators_of_Fitness_or_Lifestyle"),
+    ("Overall Visual Appeal Vibe", "Overall_Visual_Appeal_Vibe"),
+    ("Apparent Age Range Category", "Apparent_Age_Range_Category"),
+    ("Attire and Style Indicators", "Attire_and_Style_Indicators"),
+    ("Body Language and Expression", "Body_Language_and_Expression"),
+    ("Visible Enhancements or Features", "Visible_Enhancements_or_Features"),
+    ("Apparent Chest Proportions", "Apparent_Chest_Proportions"),
+    ("Apparent Attractiveness Tier", "Apparent_Attractiveness_Tier"),
+    ("Reasoning for attractiveness tier", "Reasoning_for_attractiveness_tier"),
+    ("Facial Proportion Balance", "Facial_Proportion_Balance"),
+    ("Grooming Effort Level", "Grooming_Effort_Level"),
+    ("Presentation Red Flags", "Presentation_Red_Flags"),
+    ("Visible Tattoo Level", "Visible_Tattoo_Level"),
+    ("Visible Piercing Level", "Visible_Piercing_Level"),
+    ("Short-Term / Hookup Orientation Signals", "Short_Term_Hookup_Orientation_Signals"),
+]
 
 
 def _repo_root() -> str:
@@ -15,8 +43,8 @@ def get_db_path() -> str:
 def init_db(db_path: Optional[str] = None) -> None:
     """
     Initialize the SQLite database with WAL mode and the flattened profiles table.
-    Schema mirrors build_structured_profile_prompt (extracted) + build_profile_eval_prompt (enrichment) + score.
-    Dedup is enforced via UNIQUE(Name COLLATE NOCASE, Age, Height_cm).
+    Schema mirrors extracted profile fields (core biometrics, prompts, poll, photos, visual traits),
+    LLM2 enrichment, and score. Dedup is enforced via UNIQUE(Name COLLATE NOCASE, Age, Height_cm).
     """
     db_path = db_path or get_db_path()
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -64,6 +92,10 @@ def init_db(db_path: Optional[str] = None) -> None:
                 answer_2 TEXT,
                 prompt_3 TEXT,
                 answer_3 TEXT,
+                Poll_question TEXT,
+                Poll_answer_1 TEXT,
+                Poll_answer_2 TEXT,
+                Poll_answer_3 TEXT,
                 Other_text TEXT,
                 Media_description TEXT,
                 Photo1_desc TEXT,
@@ -72,6 +104,30 @@ def init_db(db_path: Optional[str] = None) -> None:
                 Photo4_desc TEXT,
                 Photo5_desc TEXT,
                 Photo6_desc TEXT,
+                Face_Visibility_Quality TEXT,
+                Photo_Authenticity_Editing_Level TEXT,
+                Apparent_Body_Fat_Level TEXT,
+                Profile_Distinctiveness TEXT,
+                Apparent_Build_Category TEXT,
+                Apparent_Skin_Tone TEXT,
+                Apparent_Ethnic_Features TEXT,
+                Hair_Color TEXT,
+                Facial_Symmetry_Level TEXT,
+                Indicators_of_Fitness_or_Lifestyle TEXT,
+                Overall_Visual_Appeal_Vibe TEXT,
+                Apparent_Age_Range_Category TEXT,
+                Attire_and_Style_Indicators TEXT,
+                Body_Language_and_Expression TEXT,
+                Visible_Enhancements_or_Features TEXT,
+                Apparent_Chest_Proportions TEXT,
+                Apparent_Attractiveness_Tier TEXT,
+                Reasoning_for_attractiveness_tier TEXT,
+                Facial_Proportion_Balance TEXT,
+                Grooming_Effort_Level TEXT,
+                Presentation_Red_Flags TEXT,
+                Visible_Tattoo_Level TEXT,
+                Visible_Piercing_Level TEXT,
+                Short_Term_Hookup_Orientation_Signals TEXT,
                 -- Enrichment (profile_eval)
                 home_country_iso TEXT,
                 home_country_confidence REAL,
@@ -118,28 +174,53 @@ def init_db(db_path: Optional[str] = None) -> None:
             ON profiles(Name COLLATE NOCASE, Age, Height_cm);
             """
         )
-        # Ensure supplementary columns exist on pre-existing DBs
-        try:
-            cur.execute("ALTER TABLE profiles ADD COLUMN score_breakdown TEXT;")
-        except Exception:
-            pass
-        for ddl in [
-            "ALTER TABLE profiles ADD COLUMN playful REAL;",
-            "ALTER TABLE profiles ADD COLUMN flirty REAL;",
-            "ALTER TABLE profiles ADD COLUMN warm REAL;",
-            "ALTER TABLE profiles ADD COLUMN relatable REAL;",
-            "ALTER TABLE profiles ADD COLUMN direct REAL;",
-            "ALTER TABLE profiles ADD COLUMN overall_confidence REAL;",
-            "ALTER TABLE profiles ADD COLUMN rationale TEXT;",
-            "ALTER TABLE profiles ADD COLUMN opening_messages_json TEXT;",
-            "ALTER TABLE profiles ADD COLUMN opening_pick_json TEXT;",
-            "ALTER TABLE profiles ADD COLUMN opening_pick_text TEXT;",
-            "ALTER TABLE profiles ADD COLUMN verdict TEXT;",
-            "ALTER TABLE profiles ADD COLUMN decision_reason TEXT;",
-            "ALTER TABLE profiles ADD COLUMN llm_metrics_json TEXT;",
-        ]:
+        extra_cols = [
+            "score_breakdown TEXT",
+            "Poll_question TEXT",
+            "Poll_answer_1 TEXT",
+            "Poll_answer_2 TEXT",
+            "Poll_answer_3 TEXT",
+            "Face_Visibility_Quality TEXT",
+            "Photo_Authenticity_Editing_Level TEXT",
+            "Apparent_Body_Fat_Level TEXT",
+            "Profile_Distinctiveness TEXT",
+            "Apparent_Build_Category TEXT",
+            "Apparent_Skin_Tone TEXT",
+            "Apparent_Ethnic_Features TEXT",
+            "Hair_Color TEXT",
+            "Facial_Symmetry_Level TEXT",
+            "Indicators_of_Fitness_or_Lifestyle TEXT",
+            "Overall_Visual_Appeal_Vibe TEXT",
+            "Apparent_Age_Range_Category TEXT",
+            "Attire_and_Style_Indicators TEXT",
+            "Body_Language_and_Expression TEXT",
+            "Visible_Enhancements_or_Features TEXT",
+            "Apparent_Chest_Proportions TEXT",
+            "Apparent_Attractiveness_Tier TEXT",
+            "Reasoning_for_attractiveness_tier TEXT",
+            "Facial_Proportion_Balance TEXT",
+            "Grooming_Effort_Level TEXT",
+            "Presentation_Red_Flags TEXT",
+            "Visible_Tattoo_Level TEXT",
+            "Visible_Piercing_Level TEXT",
+            "Short_Term_Hookup_Orientation_Signals TEXT",
+            "playful REAL",
+            "flirty REAL",
+            "warm REAL",
+            "relatable REAL",
+            "direct REAL",
+            "overall_confidence REAL",
+            "rationale TEXT",
+            "opening_messages_json TEXT",
+            "opening_pick_json TEXT",
+            "opening_pick_text TEXT",
+            "verdict TEXT",
+            "decision_reason TEXT",
+            "llm_metrics_json TEXT",
+        ]
+        for col in extra_cols:
             try:
-                cur.execute(ddl)
+                cur.execute(f"ALTER TABLE profiles ADD COLUMN {col};")
             except Exception:
                 pass
 
@@ -377,10 +458,16 @@ def _coerce_int(val: Any, field: str) -> int:
 
 def _extract_prompts(extracted: Dict[str, Any]) -> Tuple[str, str, str, str, str, str]:
     """
-    Map 'Profile Prompts and Answers' list to prompt_1/answer_1 .. prompt_3/answer_3
+    Map 'Profile Prompts and Answers' list to prompt_1/answer_1 .. prompt_3/answer_3.
+    Accepts both nested and flat schemas.
     """
     p1 = a1 = p2 = a2 = p3 = a3 = ""
-    arr = extracted.get("Profile Prompts and Answers") or extracted.get("profile_prompts_and_answers") or []
+    content = extracted.get("Profile Content (Free Description)", {}) if isinstance(extracted, dict) else {}
+    arr = []
+    if isinstance(content, dict):
+        arr = content.get("Profile Prompts and Answers") or []
+    if not arr:
+        arr = extracted.get("Profile Prompts and Answers") or extracted.get("profile_prompts_and_answers") or []
     if isinstance(arr, list):
         if len(arr) > 0 and isinstance(arr[0], dict):
             p1 = (arr[0].get("prompt") or "").strip()
@@ -417,56 +504,118 @@ def _flatten_extracted(extracted: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(extracted, dict):
         extracted = {}
 
-    name = _val(extracted, "Name")
+    core = extracted.get("Core Biometrics (Objective)", {}) if isinstance(extracted, dict) else {}
+    if not isinstance(core, dict):
+        core = {}
+    merged = dict(extracted)
+    merged.update(core)
+
+    name = _val(merged, "Name")
     if not isinstance(name, str) or not name.strip():
         raise ValueError("Name is required")
 
-    age_raw = _val(extracted, "Age")
+    age_raw = _val(merged, "Age")
     age = _coerce_int(age_raw, "Age")
-    height_raw = _val(extracted, "Height")
+    height_raw = _val(merged, "Height")
     height_cm = _coerce_int(height_raw, "Height")
 
     (prompt_1, answer_1, prompt_2, answer_2, prompt_3, answer_3) = _extract_prompts(extracted)
 
+    content = extracted.get("Profile Content (Free Description)", {}) if isinstance(extracted, dict) else {}
+    if not isinstance(content, dict):
+        content = {}
+
+    def _photo_desc(idx: int) -> str:
+        key = f"Extensive Description of Photo {idx}"
+        entry = content.get(key)
+        if isinstance(entry, dict):
+            return (entry.get("description") or "").strip()
+        if isinstance(entry, str):
+            return entry
+        return (_val(extracted, key) or "")
+
+    other_text = content.get("Other text on profile not covered by above")
+    if not isinstance(other_text, str):
+        other_text = _val(extracted, "Other text on profile not covered by above") or ""
+
+    media_desc = content.get("Description of any non-photo media (e.g., video (identified via timestamp in top right), voice note)")
+    if not isinstance(media_desc, str):
+        media_desc = _val(extracted, "Description of any non-photo media (For example poll, voice note)") or ""
+
+    poll_question = ""
+    poll_answers = ["", "", ""]
+    poll = content.get("Poll (optional, most profiles will not have this)")
+    if isinstance(poll, dict):
+        poll_question = (poll.get("question") or "").strip()
+        answers = poll.get("answers") or []
+        if isinstance(answers, list):
+            for idx in range(min(3, len(answers))):
+                ans = answers[idx]
+                if isinstance(ans, dict):
+                    poll_answers[idx] = (ans.get("text") or "").strip()
+                elif isinstance(ans, str):
+                    poll_answers[idx] = ans.strip()
+
+    visual_root = extracted.get("Visual Analysis (Inferred From Images)", {}) if isinstance(extracted, dict) else {}
+    traits = {}
+    if isinstance(visual_root, dict):
+        traits = visual_root.get("Inferred Visual Traits Summary") or {}
+    if not isinstance(traits, dict):
+        traits = {}
+
+    def _clean_text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        return str(value)
+
+    visual_cols = {col: _clean_text(traits.get(label)) for label, col in VISUAL_TRAIT_FIELDS}
+
     row = {
         "Name": name.strip(),
-        "Gender": _val(extracted, "Gender") or "",
-        "Sexuality": _val(extracted, "Sexuality") or "",
+        "Gender": _val(merged, "Gender") or "",
+        "Sexuality": _val(merged, "Sexuality") or "",
         "Age": age,
         "Height_cm": height_cm,
-        "Location": _val(extracted, "Location") or "",
-        "Ethnicity": _val(extracted, "Ethnicity") or "",
-        "Children": _val(extracted, "Children") or "",
-        "Family_plans": _val(extracted, "Family plans") or _val(extracted, "Family_plans") or "",
-        "Covid_vaccine": _val(extracted, "Covid Vaccine") or _val(extracted, "Covid_vaccine") or "",
-        "Pets": _val(extracted, "Pets") or "",
-        "Zodiac_Sign": _val(extracted, "Zodiac Sign") or _val(extracted, "Zodiac_Sign") or "",
-        "Job_title": _val(extracted, "Job title") or _val(extracted, "Job_title") or "",
-        "University": _val(extracted, "University") or "",
-        "Religious_Beliefs": _val(extracted, "Religious Beliefs") or _val(extracted, "Religious_Beliefs") or "",
-        "Home_town": _val(extracted, "Home town") or _val(extracted, "Home_town") or "",
-        "Politics": _val(extracted, "Politics") or "",
-        "Languages_spoken": _val(extracted, "Languages spoken") or _val(extracted, "Languages_spoken") or "",
-        "Dating_Intentions": _val(extracted, "Dating Intentions") or _val(extracted, "Dating_Intentions") or "",
-        "Relationship_type": _val(extracted, "Relationship type") or _val(extracted, "Relationship_type") or "",
-        "Drinking": _val(extracted, "Drinking") or "",
-        "Smoking": _val(extracted, "Smoking") or "",
-        "Marijuana": _val(extracted, "Marijuana") or "",
-        "Drugs": _val(extracted, "Drugs") or "",
+        "Location": _val(merged, "Location") or "",
+        "Ethnicity": _val(merged, "Explicit Ethnicity") or _val(merged, "Ethnicity") or "",
+        "Children": _val(merged, "Children") or "",
+        "Family_plans": _val(merged, "Family plans") or _val(merged, "Family_plans") or "",
+        "Covid_vaccine": _val(merged, "Covid Vaccine") or _val(merged, "Covid_vaccine") or "",
+        "Pets": _val(merged, "Pets") or "",
+        "Zodiac_Sign": _val(merged, "Zodiac Sign") or _val(merged, "Zodiac_Sign") or "",
+        "Job_title": _val(merged, "Job title") or _val(merged, "Job_title") or "",
+        "University": _val(merged, "University") or "",
+        "Religious_Beliefs": _val(merged, "Religious Beliefs") or _val(merged, "Religious_Beliefs") or "",
+        "Home_town": _val(merged, "Home town") or _val(merged, "Home_town") or "",
+        "Politics": _val(merged, "Politics") or "",
+        "Languages_spoken": _val(merged, "Languages spoken") or _val(merged, "Languages_spoken") or "",
+        "Dating_Intentions": _val(merged, "Dating Intentions") or _val(merged, "Dating_Intentions") or "",
+        "Relationship_type": _val(merged, "Relationship type") or _val(merged, "Relationship_type") or "",
+        "Drinking": _val(merged, "Drinking") or "",
+        "Smoking": _val(merged, "Smoking") or "",
+        "Marijuana": _val(merged, "Marijuana") or "",
+        "Drugs": _val(merged, "Drugs") or "",
         "prompt_1": prompt_1,
         "answer_1": answer_1,
         "prompt_2": prompt_2,
         "answer_2": answer_2,
         "prompt_3": prompt_3,
         "answer_3": answer_3,
-        "Other_text": _val(extracted, "Other text on profile not covered by above") or "",
-        "Media_description": _val(extracted, "Description of any non-photo media (For example poll, voice note)") or "",
-        "Photo1_desc": _val(extracted, "Extensive Description of Photo 1") or "",
-        "Photo2_desc": _val(extracted, "Extensive Description of Photo 2") or "",
-        "Photo3_desc": _val(extracted, "Extensive Description of Photo 3") or "",
-        "Photo4_desc": _val(extracted, "Extensive Description of Photo 4") or "",
-        "Photo5_desc": _val(extracted, "Extensive Description of Photo 5") or "",
-        "Photo6_desc": _val(extracted, "Extensive Description of Photo 6") or "",
+        "Poll_question": poll_question,
+        "Poll_answer_1": poll_answers[0],
+        "Poll_answer_2": poll_answers[1],
+        "Poll_answer_3": poll_answers[2],
+        "Other_text": other_text or "",
+        "Media_description": media_desc or "",
+        "Photo1_desc": _photo_desc(1),
+        "Photo2_desc": _photo_desc(2),
+        "Photo3_desc": _photo_desc(3),
+        "Photo4_desc": _photo_desc(4),
+        "Photo5_desc": _photo_desc(5),
+        "Photo6_desc": _photo_desc(6),
+        **visual_cols,
     }
     return row
 
@@ -523,12 +672,15 @@ def upsert_profile_flat(
     }
 
     # Build insert with named parameters
+    visual_cols = [col for _, col in VISUAL_TRAIT_FIELDS]
     cols = [
         "Name","Gender","Sexuality","Age","Height_cm","Location","Ethnicity","Children","Family_plans",
         "Covid_vaccine","Pets","Zodiac_Sign","Job_title","University","Religious_Beliefs","Home_town",
         "Politics","Languages_spoken","Dating_Intentions","Relationship_type","Drinking","Smoking",
         "Marijuana","Drugs","prompt_1","answer_1","prompt_2","answer_2","prompt_3","answer_3",
+        "Poll_question","Poll_answer_1","Poll_answer_2","Poll_answer_3",
         "Other_text","Media_description","Photo1_desc","Photo2_desc","Photo3_desc","Photo4_desc","Photo5_desc","Photo6_desc",
+        *visual_cols,
         "home_country_iso","home_country_confidence","home_country_modifier","job_normalized_title","job_est_salary_gbp",
         "job_band","job_confidence","job_band_reason","job_modifier","university_elite","matched_university_name","university_modifier",
         "score","score_breakdown","timestamp"

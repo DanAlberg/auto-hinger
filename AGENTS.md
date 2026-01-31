@@ -8,4 +8,3 @@
 ## Workflow guardrails (for this repo)
 - Plan first; no code changes until the user explicitly says "GO".
 - Before coding: summarize proposed edits and ask for confirmation.
-- After coding: show exact diff chunks and a short rationale.

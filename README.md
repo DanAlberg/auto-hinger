@@ -1,142 +1,58 @@
-# auto-hinger — Hinge Automation
+# AutoHinge
 
-Automates interactions in the Hinge Android app using ADB, computer-vision template matching, and an optional cloud vision/text analysis provider. Navigates profiles, extracts content, makes decisions, and persists results to a local SQLite database.
+End-to-end Hinge profile scanner + scorer + opener selector for Android via ADB.
 
-Warning
-- This can send automated likes/comments. Review platform terms and use at your own risk.
-- Screenshots may be analyzed by an external provider if enabled. Do not run with private data you’re unwilling to share.
-- Use a test account and enable step-by-step confirmations when testing (e.g., with --dry-run).
+What it does
+- Connects to an Android device (ADB)
+- Scans a single profile with UI XML + photo crops
+- Extracts core biometrics from the UI
+- LLM1: visual analysis + photo descriptions
+- LLM2: enrichment (home country, job band, university elite)
+- Scores long/short
+- LLM3: generates openers (long/short)
+- LLM4: chooses the best opener + target
+- Optionally taps the like button for the chosen target
+
+What it does not do
+- Send comments/messages
+- Dislike/reject swipes
 
 Requirements
 - Android device with USB debugging enabled and Hinge installed
-- Android SDK Platform Tools (adb) on PATH
+- adb on PATH
 - Python 3.12+
-- uv package manager
-- Provider API key (env var used by the app; see Setup)
+- uv (optional but recommended)
 
 Setup
-1) Environment (from repo root)
-   Create app/.env:
+1) Create `app/.env`:
    ```
-   OPENAI_API_KEY=your-provider-api-key
+   OPENAI_API_KEY=your-key
+   GEMINI_API_KEY=your-key
+   LLM_PROVIDER=gemini|openai
+   GEMINI_MODEL=gemini-2.5-pro
+   GEMINI_SMALL_MODEL=gemini-2.5-flash
+   OPENAI_MODEL=gpt-5
+   OPENAI_SMALL_MODEL=gpt-5-mini
    ```
+   Only the key for your provider is required. `LLM_PROVIDER` defaults to gemini if unset.
 
-2) Install dependencies (from the app/ directory):
+2) Install dependencies:
    ```
    cd app
    uv sync
    ```
 
-3) Verify device:
-   ```
-   adb devices
-   # your device should be listed as "device"
-   ```
-
-Quick start
+Run
 ```
 cd app
-uv sync
-uv run python main_agent.py
+uv run python start.py
 ```
 
-Launch options
-- Standard run (default config, saves screenshots to app/images/):
-  ```
-  cd app
-  uv run python main_agent.py
-  ```
-
-- Dry-run (exercise full flow, skip LIKE/SEND/DISLIKE taps):
-  ```
-  cd app
-  uv run python main_agent.py --profiles 1 --dry-run
-  ```
-
-
-- Safer + verbose with confirmations:
-  ```
-  cd app
-  uv run python main_agent.py --profiles 1 --verbose --confirm-steps
-  ```
-
-CLI options
-- --profiles, -p               Maximum number of profiles to process (default: 10)
-- --config, -c                 default | fast (default: default)
-- --device-ip                  ADB server host (default: 127.0.0.1)
-- --verbose, -v                Enable verbose logging
-- --manual-confirm, --confirm-steps  Require confirmation before each step; logs actions to logs/ (default: disabled)
-- --like-mode {priority,normal} Prefer the send button variant (default: priority)
-- --ai-routing                 Enable an alternative routing mode (off by default)
-- --dry-run                    Run full logic but skip LIKE/SEND/DISLIKE taps
-- --skip-precheck, --no-precheck  Bypass startup like-button pre-check
-
-Behavior and defaults
-- Default action is like-with-comment. Falls back to like-only if typing/sending fails or the comment UI doesn’t appear.
-- Priority send preferred by default; normal send used if priority is unavailable.
-- Startup pre-check ensures the app begins at the top of the Hinge feed (Like visible); otherwise exits with guidance. For testing, you can bypass this with --skip-precheck.
-- Manual confirm is off by default; enable with --confirm-steps to require approval only for irreversible taps (LIKE/DISLIKE). Normal analysis/scroll/LLM steps run without prompts. An additional confirm-before-send option can gate the Send tap when enabled.
+Options
 
 Outputs
-- Database: profiles.db at repository root
-  - ACID writes with WAL; duplicate prevention by Name+Age+Height (canonicalized)
-- Screenshots: app/images/
-- Logs: app/logs/
-
-Main flow (runtime)
-- Entry: app/main_agent.py → app/hinge_agent.py
-- Device/CV: app/helper_functions.py, app/cv_y_band.py, app/assets/
-- LLM: app/analyzer.py → app/analyzer_openai.py + app/llm_client.py
-- Prompting/scoring: app/prompt_engine.py, app/profile_eval.py, app/batch_payload.py
-- Storage/export: app/sqlite_store.py, app/data_store.py, app/profile_export.py, app/text_utils.py
-
-LLM routing quick reference
-- Small model (LLM_SMALL_MODEL / OPENAI_SMALL_MODEL / GEMINI_SMALL_MODEL):
-  - ai_decide_action, extract_user_content_only, analyze_complete_profile, batch extraction (_submit_llm_batch_request)
-  - analyzer functions (extract_text_from_image, analyze_dating_ui, find_ui_elements, analyze_profile_scroll_content, get_profile_navigation_strategy, detect_comment_ui_elements, verify_action_success, generate_comment)
-  - profile_eval in hinge_agent (currently uses the small model)
-- Large model (LLM_MODEL / OPENAI_MODEL / GEMINI_MODEL):
-  - opening_messages and opening_pick in the opener pipeline (via app/batch_payload.py; hinge_agent currently passes small for opening_messages and large for opening_pick)
-  - opening_style uses app/agent_config.py LLM_MODELS
-
-Architecture
-- Entry point: app/main_agent.py
-  - Parses CLI flags, loads AgentConfig, and launches the orchestrator.
-- Orchestrator: app/hinge_agent.py
-    - initialize_session → capture_screenshot → analyze_profile
-    - make_like_decision → detect_like_button → execute_like
-    - send_comment_with_typing / send_like_without_comment
-    - navigate_to_next → verify_profile_change → finalize_session
-    - recover_from_stuck and reset_app for resilience
-- Computer vision & device I/O: app/helper_functions.py
-  - Template matching for UI elements (like/send/comment field)
-  - ADB wrappers for taps, swipes, keyboard input, and app lifecycle
-- Analysis provider facade: app/analyzer.py (with a default implementation in app/analyzer_openai.py)
-  - Handles OCR/extraction, UI interpretation, and decision hints
-  - Provider is selected/configured via environment variables
-- Export & data: app/profile_export.py, app/data_store.py
-  - Writes to SQLite (app/sqlite_store.py) with canonical de-dup (Name+Age+Height)
-- Configuration: app/agent_config.py
-  - Centralized runtime flags and mode toggles
-- Assets: app/assets/
-  - Template images for CV matching (like_button.png, dislike_button.png, comment_field.png, send_button.png, send_priority_button.png)
-  - Swap with device-specific crops if matching is unreliable
-
-Troubleshooting
-- Device connection:
-  ```
-  adb devices
-  adb kill-server
-  adb start-server
-  ```
-
-- Dependencies:
-  ```
-  cd app
-  uv sync --reinstall
-  ```
-
-- Verbose run:
-  ```
-  cd app
-  uv run python main_agent.py --verbose
+- `profiles.db` at repo root (created on first successful insert)
+- `app/images/crops/` photo crops
+- `app/logs/` run JSON + score table
+- Optional AI trace: set `HINGE_AI_TRACE_FILE=app/logs/ai_trace_YYYYMMDD_HHMMSS.log`
+- Optional run JSON echo: set `HINGE_SHOW_RUN_JSON=1`
