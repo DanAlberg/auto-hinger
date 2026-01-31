@@ -11,11 +11,9 @@ What it does
 - Scores long/short
 - LLM3: generates openers (long/short)
 - LLM4: chooses the best opener + target
-- Optionally taps the like button for the chosen target
-
-What it does not do
-- Send comments/messages
-- Dislike/reject swipes
+- Taps the chosen target like
+- Opens the comment field, types the chosen opener, and sends a priority like (confirmation required unless --unrestricted)
+- On reject, taps the skip/dislike button (confirmation required unless --unrestricted)
 
 Requirements
 - Android device with USB debugging enabled and Hinge installed
@@ -49,6 +47,7 @@ uv run python start.py
 ```
 
 Options
+- `--unrestricted`: skips confirmations before dislike and send priority like
 
 Outputs
 - `profiles.db` at repo root (created on first successful insert)

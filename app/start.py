@@ -2,11 +2,12 @@
 
 """Entry point for the full Hinge scrape/score/opener pipeline."""
 
+import argparse
 import json
 import os
 import time
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 import config  # ensure .env is loaded early
 
@@ -29,12 +30,16 @@ from ui_scan import (
     _compute_desired_offset,
     _dump_ui_xml,
     _ensure_photo_square,
+    _find_add_comment_bounds,
     _find_like_button_in_photo,
     _find_like_button_near_bounds_screen,
     _find_like_button_near_expected,
+    _find_dislike_bounds,
     _find_poll_option_bounds_by_text,
     _find_prompt_bounds_by_text,
     _find_scroll_area,
+    _find_send_like_anyway_bounds,
+    _find_send_priority_like_bounds,
     _find_visible_photo_bounds,
     _is_square_bounds,
     _match_photo_bounds_by_hash,
@@ -72,7 +77,51 @@ def _init_device(device_ip: str):
     return device, width, height
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the Hinge scrape/score/opener pipeline")
+    parser.add_argument("--unrestricted", action="store_true", help="Skip confirmations for dislike/send")
+    return parser.parse_args()
+
+
+def _confirm_action(action_label: str, unrestricted: bool) -> bool:
+    if unrestricted:
+        return True
+    try:
+        resp = input(f"Confirm {action_label}? (y/N): ").strip().lower()
+        return resp in {"y", "yes"}
+    except Exception:
+        return False
+
+
+def _tap_bounds(device, bounds: Tuple[int, int, int, int], width: int, height: int) -> Tuple[int, int]:
+    tap_x, tap_y = _bounds_center(bounds)
+    tap_x = max(0, min(width - 1, tap_x))
+    tap_y = max(0, min(height - 1, tap_y))
+    from helper_functions import tap
+    tap(device, tap_x, tap_y)
+    return tap_x, tap_y
+
+
+def _handle_send_like_anyway(device, width: int, height: int) -> bool:
+    # TODO: When batch runs are added, only check once per batch.
+    try:
+        time.sleep(0.5)
+        sheet_xml = _dump_ui_xml(device)
+        sheet_nodes = _parse_ui_nodes(sheet_xml)
+        anyway_bounds = _find_send_like_anyway_bounds(sheet_nodes)
+        if not anyway_bounds:
+            return False
+        print("[UPSSELL] Send Like anyway sheet detected; dismissing.")
+        _tap_bounds(device, anyway_bounds, width, height)
+        time.sleep(0.4)
+        return True
+    except Exception as e:
+        print(f"[UPSSELL] failed to dismiss: {e}")
+        return False
+
+
 def main() -> int:
+    args = _parse_args()
     _force_gemini_env()
 
     device_ip = "127.0.0.1"
@@ -236,18 +285,16 @@ def main() -> int:
                         tap_bounds = seek_photo.get("tap_bounds")
                         tap_desc = seek_photo.get("tap_desc", "Like photo")
                     if tap_bounds:
-                        tap_x, tap_y = _bounds_center(tap_bounds)
-                        tap_x = max(0, min(width - 1, tap_x))
-                        tap_y = max(0, min(height - 1, tap_y))
                         print(f"[TARGET] photo tap bounds={tap_bounds} desc='{tap_desc}'")
                         try:
-                            from helper_functions import tap
-                            tap(device, tap_x, tap_y)
+                            tap_x, tap_y = _tap_bounds(device, tap_bounds, width, height)
                             print(f"[TARGET] tap issued at ({tap_x}, {tap_y})")
                         except Exception as e:
                             print(f"[TARGET] tap failed: {e}")
-                        target_action["tap_coords"] = [tap_x, tap_y]
-                        target_action["tap_like"] = True
+                            tap_x, tap_y = None, None
+                        if tap_x is not None:
+                            target_action["tap_coords"] = [tap_x, tap_y]
+                            target_action["tap_like"] = True
                         time.sleep(0.35)
                         post_xml = _dump_ui_xml(device)
                         post_nodes = _parse_ui_nodes(post_xml)
@@ -392,18 +439,16 @@ def main() -> int:
                             target_bounds[3] - scroll_offset,
                         )
                 if tap_bounds:
-                    tap_x, tap_y = _bounds_center(tap_bounds)
-                    tap_x = max(0, min(width - 1, tap_x))
-                    tap_y = max(0, min(height - 1, tap_y))
                     print(f"[TARGET] tap bounds={tap_bounds} desc='{tap_desc}' expected_y={expected_screen_y}")
                     try:
-                        from helper_functions import tap
-                        tap(device, tap_x, tap_y)
+                        tap_x, tap_y = _tap_bounds(device, tap_bounds, width, height)
                         print(f"[TARGET] tap issued at ({tap_x}, {tap_y})")
                     except Exception as e:
                         print(f"[TARGET] tap failed: {e}")
-                    target_action["tap_coords"] = [tap_x, tap_y]
-                    target_action["tap_like"] = True
+                        tap_x, tap_y = None, None
+                    if tap_x is not None:
+                        target_action["tap_coords"] = [tap_x, tap_y]
+                        target_action["tap_like"] = True
                     if target_type != "poll":
                         time.sleep(0.35)
                         post_xml = _dump_ui_xml(device)
@@ -419,6 +464,22 @@ def main() -> int:
                     print("[TARGET] no tap bounds resolved; skipping tap")
             else:
                 print("[TARGET] missing bounds; skipping tap")
+
+    if decision == "reject":
+        post_xml = _dump_ui_xml(device)
+        post_nodes = _parse_ui_nodes(post_xml)
+        dislike_bounds = _find_dislike_bounds(post_nodes)
+        if dislike_bounds:
+            if _confirm_action("dislike", args.unrestricted):
+                try:
+                    tap_x, tap_y = _tap_bounds(device, dislike_bounds, width, height)
+                    target_action = {"action": "dislike", "tap_coords": [tap_x, tap_y]}
+                except Exception as e:
+                    print(f"[DISLIKE] tap failed: {e}")
+            else:
+                print("[DISLIKE] skipped by user")
+        else:
+            print("[DISLIKE] button not found")
 
     out = {
         "meta": {
@@ -493,6 +554,90 @@ def main() -> int:
                 update_profile_opening_pick(pid, llm4_result)
     except Exception as e:
         print(f"[sql] log failed: {e}")
+
+    if decision in {"long_pickup", "short_pickup"}:
+        if not isinstance(llm4_result, dict):
+            raise RuntimeError("LLM4 missing result; cannot send comment.")
+        chosen_text = llm4_result.get("chosen_text")
+        if not isinstance(chosen_text, str) or not chosen_text.strip():
+            raise RuntimeError("LLM4 missing chosen_text; cannot send comment.")
+
+        comment_bounds = None
+        for _ in range(3):
+            post_xml = _dump_ui_xml(device)
+            post_nodes = _parse_ui_nodes(post_xml)
+            comment_bounds = _find_add_comment_bounds(post_nodes)
+            if comment_bounds:
+                break
+            time.sleep(0.25)
+        if not comment_bounds:
+            raise RuntimeError("Add a comment field not found.")
+
+        try:
+            _tap_bounds(device, comment_bounds, width, height)
+            time.sleep(0.4)
+            from helper_functions import input_text, hide_keyboard
+            input_text(device, chosen_text.strip())
+            time.sleep(0.2)
+            hide_keyboard(device)
+            time.sleep(0.6)
+        except Exception as e:
+            raise RuntimeError(f"Failed to enter comment: {e}")
+
+        send_bounds = None
+        for attempt in range(6):
+            post_xml = _dump_ui_xml(device)
+            post_nodes = _parse_ui_nodes(post_xml)
+            send_bounds = _find_send_priority_like_bounds(post_nodes)
+            if send_bounds:
+                break
+            _log(f"[SEND] priority button not found (attempt {attempt + 1}/6)")
+            time.sleep(0.35)
+
+        if not send_bounds:
+            try:
+                os.makedirs("logs", exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                xml_path = os.path.join("logs", f"send_priority_missing_{ts}.xml")
+                with open(xml_path, "w", encoding="utf-8") as f:
+                    f.write(post_xml)
+                _log(f"[SEND] wrote XML snapshot to {xml_path}")
+            except Exception:
+                pass
+            # Recovery: re-focus the comment field, then retry.
+            try:
+                recovery_nodes = _parse_ui_nodes(_dump_ui_xml(device))
+                recovery_bounds = _find_add_comment_bounds(recovery_nodes)
+                if recovery_bounds:
+                    _tap_bounds(device, recovery_bounds, width, height)
+                    time.sleep(0.3)
+                    from helper_functions import hide_keyboard
+                    hide_keyboard(device)
+                    time.sleep(0.6)
+                    for attempt in range(4):
+                        post_xml = _dump_ui_xml(device)
+                        post_nodes = _parse_ui_nodes(post_xml)
+                        send_bounds = _find_send_priority_like_bounds(post_nodes)
+                        if send_bounds:
+                            break
+                        _log(f"[SEND] recovery attempt {attempt + 1}/4 failed")
+                        time.sleep(0.35)
+            except Exception as e:
+                _log(f"[SEND] recovery failed: {e}")
+
+        if not send_bounds:
+            raise RuntimeError("Send priority like button not found.")
+
+        if _confirm_action("send priority like", args.unrestricted):
+            try:
+                tap_x, tap_y = _tap_bounds(device, send_bounds, width, height)
+                target_action["comment_text"] = chosen_text.strip()
+                target_action["send_priority_coords"] = [tap_x, tap_y]
+                _handle_send_like_anyway(device, width, height)
+            except Exception as e:
+                raise RuntimeError(f"Send priority like failed: {e}")
+        else:
+            print("[SEND] skipped by user")
 
     preference_flag = _classify_preference_flag(long_score, short_score)
     print("\n=== Preference Flag ===")

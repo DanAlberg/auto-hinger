@@ -151,7 +151,7 @@ def LLM3_LONG(extracted: Dict[str, Any]) -> str:
     extracted_json = json.dumps(extracted or {}, ensure_ascii=False, indent=2)
     return (
         "You are generating opening messages for Hinge.\n"
-        "These should be warm, natural, and genuinely curious questions — the kind of thing a normal attractive guy would send.\n"
+        "These should be warm, natural, and genuinely curious questions — the kind of thing a normal, confident guy would send.\n"
         "The goal is to start an easy conversation.\n\n"
         "Profile details:\n"
         f"{extracted_json}\n\n"
@@ -161,10 +161,8 @@ def LLM3_LONG(extracted: Dict[str, Any]) -> str:
         "- Each opener must anchor to EXACTLY ONE profile element ID: prompt_1..prompt_3, photo_1..photo_6, poll_1_a|poll_1_b|poll_1_c.\n"
         "- Every opener must be a simple question (or light A/B choice) that is easy to reply to.\n"
         "- Keep it sweet, and either curious or flirty\n"
-        "- Do NOT narrate the photo like a caption. Reference it naturally (\"where was this?\" not \"in photo 3\"). The text will be linked to the photo by the user, using the index supplied.\n"
-        "- Avoid generic compliments like \"you’re stunning\".\n"
-        "- Avoid forced jokes, try-hard banter, or anything that sounds scripted.\n"
-        "- Messages should feel human, relaxed, and effortless. Don't overly specify - i.e. \"you look amazing in that red fabric dress\" vs \"you look amazing in that dress\". \n\n"
+        "- Do NOT narrate the photo or prompt like a caption. Reference it naturally (\"where was this?\" not \"in photo 3\" or \"that rooftop looks...\"). The text will be linked to the photo by the user, using the index supplied, and the recipient will know which photo you were referring to. Act as if in natural conversation\n"
+        "- Messages should feel human, relaxed, and effortless.\n\n"
         "Output format (JSON only):\n"
         "{\n"
         '  "openers": [\n'
@@ -194,9 +192,7 @@ def LLM3_SHORT(extracted: Dict[str, Any]) -> str:
         "- Each opener must anchor to EXACTLY ONE profile element ID: prompt_1..prompt_3, photo_1..photo_6, poll_1_a|poll_1_b|poll_1_c.\n"
         "- Every opener must be a question (or light A/B choice) that is easy to reply to.\n"
         "- Keep it bold, playful, and flirty. If the profile signals a spicy vibe, add sexual tension or innuendo.\n"
-        "- Do NOT narrate the photo like a caption. Reference it naturally (\"where was this?\" not \"in photo 3\"). The text will be linked to the photo by the user, using the index supplied.\n"
-        "- Avoid generic compliments like \"you’re stunning\".\n"
-        "- Avoid try-hard banter, forced jokes, or anything that sounds scripted.\n"
+        "- Do NOT narrate the photo or prompt like a caption. Reference it naturally (\"where was this?\" not \"in photo 3\" or \"that rooftop looks...\"). The text will be linked to the photo by the user, using the index supplied, and the recipient will know which photo you were referring to. Act as if in natural conversation\n"
         "- Keep it human and natural, not verbose.\n"
         "Output format (JSON only):\n"
         "{\n"
@@ -215,7 +211,7 @@ def LLM4(openers_json: Dict[str, Any]) -> str:
     openers_str = json.dumps(openers_json or {}, ensure_ascii=False, indent=2)
     return (
         "You are selecting the single best Hinge opener from a provided list.\n"
-        "Pick the one most likely to get a reply. Be decisive.\n\n"
+        "Pick the one that is the best, least cringy, and most importantly most likely to get a reply. Be decisive.\n\n"
         "Openers JSON:\n"
         f"{openers_str}\n\n"
         "Output JSON only:\n"

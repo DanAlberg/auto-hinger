@@ -39,6 +39,23 @@ def swipe(device, x1: int, y1: int, x2: int, y2: int, duration: int = 500) -> No
     device.shell(f"input swipe {x1} {y1} {x2} {y2} {duration}")
 
 
+def input_text(device, text: str) -> None:
+    if not text:
+        return
+    s = text.replace("\n", " ").replace("\r", " ").replace("\t", " ").strip()
+    s = s.replace(" ", "%s")
+    s = _shell_quote(s)
+    device.shell(f"input text {s}")
+
+
+def _shell_quote(text: str) -> str:
+    return "'" + text.replace("'", "'\"'\"'") + "'"
+
+
+def hide_keyboard(device) -> None:
+    device.shell("input keyevent 4")
+
+
 def get_screen_resolution(device):
     output = device.shell("wm size")
     resolution = output.strip().split(":")[1].strip()

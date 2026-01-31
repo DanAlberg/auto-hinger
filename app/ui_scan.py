@@ -125,6 +125,45 @@ def _bounds_center(bounds: Tuple[int, int, int, int]) -> Tuple[int, int]:
     return int((x1 + x2) / 2), int((y1 + y2) / 2)
 
 
+def _bounds_area(bounds: Tuple[int, int, int, int]) -> int:
+    x1, y1, x2, y2 = bounds
+    return max(0, x2 - x1) * max(0, y2 - y1)
+
+
+def _bounds_contains(
+    outer: Tuple[int, int, int, int],
+    inner: Tuple[int, int, int, int],
+) -> bool:
+    return (
+        outer[0] <= inner[0]
+        and outer[1] <= inner[1]
+        and outer[2] >= inner[2]
+        and outer[3] >= inner[3]
+    )
+
+
+def _find_enclosing_bounds(
+    nodes: List[Dict[str, Any]],
+    inner: Optional[Tuple[int, int, int, int]],
+) -> Optional[Tuple[int, int, int, int]]:
+    if not inner:
+        return None
+    inner_area = _bounds_area(inner)
+    best_bounds = None
+    best_area = None
+    for n in nodes:
+        b = n.get("bounds")
+        if not b or not _bounds_contains(b, inner):
+            continue
+        area = _bounds_area(b)
+        if area <= inner_area:
+            continue
+        if best_area is None or area < best_area:
+            best_area = area
+            best_bounds = b
+    return best_bounds or inner
+
+
 def _bounds_close(
     a: Optional[Tuple[int, int, int, int]],
     b: Optional[Tuple[int, int, int, int]],
@@ -295,6 +334,56 @@ def _find_horizontal_scroll_area(
         return None
     # Prefer the widest candidate.
     return sorted(candidates, key=lambda x: x[0], reverse=True)[0][1]
+
+
+def _find_dislike_bounds(nodes: List[Dict[str, Any]]) -> Optional[Tuple[int, int, int, int]]:
+    for n in nodes:
+        cd = (n.get("content_desc") or "").strip()
+        if not cd:
+            continue
+        if cd.lower().startswith("skip "):
+            return n.get("bounds")
+    return None
+
+
+def _find_add_comment_bounds(nodes: List[Dict[str, Any]]) -> Optional[Tuple[int, int, int, int]]:
+    for n in nodes:
+        tx = (n.get("text") or "").strip().lower()
+        if tx == "add a comment":
+            return n.get("bounds")
+    for n in nodes:
+        b = n.get("bounds")
+        if not b:
+            continue
+        tx = (n.get("text") or "").strip().lower()
+        if tx != "add a comment":
+            continue
+        return b
+    return None
+
+
+def _find_send_priority_like_bounds(nodes: List[Dict[str, Any]]) -> Optional[Tuple[int, int, int, int]]:
+    target_norm = _normalize_text_basic("send priority like with message")
+    for n in nodes:
+        cd = _normalize_text_basic(n.get("content_desc") or "")
+        if cd == target_norm:
+            return _find_enclosing_bounds(nodes, n.get("bounds"))
+        tx = _normalize_text_basic(n.get("text") or "")
+        if tx == target_norm:
+            return _find_enclosing_bounds(nodes, n.get("bounds"))
+    return None
+
+
+def _find_send_like_anyway_bounds(nodes: List[Dict[str, Any]]) -> Optional[Tuple[int, int, int, int]]:
+    target_norm = _normalize_text_basic("send like anyway")
+    for n in nodes:
+        cd = _normalize_text_basic(n.get("content_desc") or "")
+        if cd == target_norm:
+            return _find_enclosing_bounds(nodes, n.get("bounds"))
+        tx = _normalize_text_basic(n.get("text") or "")
+        if tx == target_norm:
+            return _find_enclosing_bounds(nodes, n.get("bounds"))
+    return None
 
 
 def _clean_name_text(text: str) -> str:
